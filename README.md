@@ -4,7 +4,7 @@ An open-city VR sandbox for Meta Quest 3, built with Godot 4.5 and OpenXR.
 The police chase you, you steal cars, and you fight with fists, melee weapons, guns, and superpowers.
 It is gory: blood sprays and pools, limbs come off, heads pop, and bodies come apart.
 
-**APK:** [`build/PoliceChaseVR.apk`](build/PoliceChaseVR.apk) (arm64, about 78 MB)
+**APK:** [`build/PoliceChaseVR.apk`](build/PoliceChaseVR.apk) (arm64, about 92 MB)
 
 ## Install on the Quest 3
 
@@ -47,12 +47,22 @@ Your left wrist shows health, wanted stars, what each hand holds, score and the 
 - **Cars.** You can run people over, launch cars with telekinesis or force push, and blow them up. Wrecked cars burn and catch nearby people in the blast.
 - If you die, you respawn nearby with your wanted level cleared.
 
+## Graphics
+
+- **People** are smooth, sculpted bodies on an 11-bone skeleton: faces with eyes, brows, nose, lips and ears, hair styles, beards, sunglasses, hands with fingers, shoes, and clothing that varies (t-shirts or long sleeves, jeans or shorts, belts, prints). Police wear a uniform, cap, badge, duty belt and holster. They walk, run, flee, look at you, aim and swing with bending knees and elbows.
+- **Ragdolls** use the same 11 bones, so bodies fold at the knees and elbows. Any joint can be severed (head, shoulders, elbows, hips, knees, or the waist to cut someone in half), with flesh and bone stumps, dripping blood, wounds where they were hit, and blood pools that spread under the body.
+- **Cars** are lofted bodies with wheel arches, raked windshields, pillars, side windows, door seams, mirrors, headlights, grilles, bumpers, plates and spoked rims. There are sedans, hatchbacks, SUVs, vans, taxis and black-and-white police cruisers with a push bar and light bar. Each has a cabin interior with seats and dashboard, and real seated drivers. Crashes, punches and thrown objects leave visible dents.
+- **The city** uses CC0 photo textures: asphalt with lane markings, crosswalks, stop lines and manholes; raised concrete sidewalks with curbs; brick, stone and glass facades on the buildings, with shopfronts, signs and lit shop interiors on the ground floor. There are trees, street lamps, traffic lights, hydrants, bins and benches. A ring of towers forms the skyline. The sun casts real-time shadows near the player.
+- **Hands** are articulated: fingers curl with the grip and the index finger follows the trigger.
+
 ## Built for a steady 90 fps
 
 - Uses Godot's Compatibility (OpenGL ES 3) renderer, which is the renderer Godot recommends for Quest. It requests 90 Hz and matches the physics rate to it.
-- 4x MSAA, high dynamic foveated rendering, and no real-time shadows. Soft blob shadows are used instead.
-- The city is procedural and drawn with very few calls. All buildings are one MultiMesh with a procedural window shader. Trees, lamps and their shadows are MultiMeshes too. The roads are one shader on one plane.
-- People, cars and weapons are merged into single meshes from pooled looks, drawn with one shared vertex-colour shader. A person costs 6 draw calls and a car about 10. A busy street view renders in about 200 draw calls.
+- 4x MSAA and high dynamic foveated rendering. Shadows use one 2048 cascade that only covers the 32 m around you, and soft blob shadows cover the rest.
+- All buildings are one MultiMesh using a texture array of facades. Roads are one shaded plane and sidewalks one mesh. Street furniture is grouped into 2×2-block chunks so only nearby chunks are drawn.
+- Each person is one skinned mesh (one draw call) with two levels of detail: about 5,000 triangles within 14 m and about 2,300 beyond. A car body is about 4,300 triangles; its interior only draws within 14 m.
+- All people looks, car bodies and weapons are generated once at startup (about 1 second on a PC), so nothing is built during play.
+- A busy street renders in about 200 draw calls and 650,000 triangles including the shadow pass, measured on desktop. It has not been profiled on a headset yet.
 - Blood decals are one MultiMesh ring buffer and blood particles are pooled. Ragdolls freeze when they come to rest, and the number of live ragdolls is capped.
 - People, cars and props spawn around the player and despawn behind them. Small details are culled with distance.
 - All sound is synthesized at startup, so the APK has no audio files.
@@ -63,8 +73,10 @@ Your left wrist shows health, wanted stars, what each hand holds, score and the 
 | --- | --- |
 | `scripts/main.gd` | Startup, OpenXR setup, spawning and despawning, a headless self-test and a screenshot mode |
 | `scripts/player.gd`, `scripts/hand.gd` | VR body, locomotion, driving, punching, grabbing, telekinesis and force push |
-| `scripts/ped.gd`, `scripts/ragdoll.gd` | Civilians and police AI, ragdolls, dismemberment and gibbing |
-| `scripts/car.gd` | Drivable cars, traffic and police pursuit AI, carjacking, crashes and explosions |
+| `scripts/body_gen.gd`, `scripts/ped.gd`, `scripts/ragdoll.gd` | Human bodies and looks, civilian and police AI and animation, ragdolls, dismemberment and gibbing |
+| `scripts/car_gen.gd`, `scripts/car.gd` | Car bodies and interiors, driving, traffic and police pursuit AI, carjacking, dents, crashes and explosions |
+| `scripts/geo.gd` | The procedural modelling toolkit: lofts, lathes, rounded boxes, capsules, skinning |
+| `shaders/`, `textures/` | Road, sidewalk and building shaders and the CC0 textures (see `CREDITS.md`) |
 | `scripts/weapon.gd` | Melee and gun logic |
 | `scripts/city.gd` | Procedural city, shaders, lighting and road and sidewalk navigation |
 | `scripts/gore.gd`, `scripts/sfx.gd`, `scripts/hud.gd` | Blood effects, procedural audio and the wrist HUD |
@@ -88,5 +100,7 @@ Headless checks:
 
 ```
 godot --headless --path . -- --autotest              # exercises combat, powers, driving, explosions, death
+godot --headless --path . -- --soak                  # 40 s unattended chase with a high wanted level
 godot --path . -- --screenshot=/tmp/shot.png         # renders review screenshots (needs a display)
+godot --path . res://tools/viewer.tscn -- --what=people --shot=/tmp/p.png   # model viewer: people, faces, cars, weapons, hands
 ```

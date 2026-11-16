@@ -249,7 +249,7 @@ func exit_car() -> void:
 	c.exit_player()
 	var yaw := c.global_transform.basis.get_euler().y
 	var door := c.door_global()
-	global_transform = Transform3D(Basis(Vector3.UP, yaw), Vector3(door.x, 0.05, door.z))
+	global_transform = Transform3D(Basis(Vector3.UP, yaw), Vector3(door.x, Game.city.ground_height(door) + 0.05, door.z))
 	collision_layer = Game.bit(Game.L_PLAYER)
 	collision_mask = Game.mask([Game.L_WORLD, Game.L_CAR, Game.L_PROP])
 	col.disabled = false
@@ -324,7 +324,7 @@ func respawn() -> void:
 		if c is Ped:
 			c.state = Ped.State.WANDER
 	var p := Game.city.random_walk_point_near(global_position, 25.0, 60.0)
-	global_position = Vector3(p.x, 0.1, p.z)
+	global_position = Vector3(p.x, p.y + 0.1, p.z)
 	velocity = Vector3.ZERO
 	knock = Vector3.ZERO
 	fade.visible = false

@@ -11,10 +11,13 @@ var weapon_timer := 0.0
 var frame := 0
 var autotest_step := 0
 var shot_path := ""
+var soak := false
 
 func _ready() -> void:
 	Game.main = self
 	for a in OS.get_cmdline_user_args():
+		if a == "--soak":
+			soak = true
 		if a.begins_with("--screenshot="):
 			shot_path = a.substr(13)
 			Game.screenshot = true
@@ -37,6 +40,18 @@ func _ready() -> void:
 	hud = Hud.new()
 	add_child(hud)
 	hud.setup(player)
+	var t0 := Time.get_ticks_msec()
+	Ped.prebuild_looks()
+	var t1 := Time.get_ticks_msec()
+	# build every car and weapon mesh now so nothing hitches during play
+	for col in MeshLib.CAR_COLORS:
+		for t in ["sedan", "hatch", "suv", "van"]:
+			CarGen.meshes(t, col)
+	CarGen.meshes("police", Color.WHITE)
+	CarGen.meshes("taxi", Color.WHITE)
+	for w in Weapon.TYPES.keys():
+		Weapon.visual_mesh(w)
+	print("startup: people %d ms, cars+weapons %d ms" % [t1 - t0, Time.get_ticks_msec() - t1])
 	_spawn_props()
 	_spawn_initial_weapons(start)
 	_spawn_starter_car(start)
@@ -93,6 +108,11 @@ func spawn_cop_at(pos: Vector3, has_gun: bool) -> Ped:
 func spawn_car(police: bool, near: Vector3, min_r: float, max_r: float) -> Car:
 	var city := Game.city
 	var info := city.random_road_point_near(near, min_r, max_r)
+	# don't spawn on top of another car
+	for c2 in get_tree().get_nodes_in_group("cars"):
+		if (c2 as Node3D).global_position.distance_to(info["pos"]) < 7.0:
+			info = city.random_road_point_near(near, min_r, max_r)
+			break
 	var c := Car.create(police, MeshLib.CAR_COLORS[Game.randi_range(0, MeshLib.CAR_COLORS.size() - 1)])
 	add_child(c)
 	c.place_on_road(info["from"], info["to"], 0.5)
@@ -150,31 +170,86 @@ DRIVING  R trigger gas   L trigger brake/reverse   L stick steer"""
 	MeshLib.inst(MeshLib.cylinder(0.06, 1.5, 6), MeshLib.mat(Color(0.25, 0.26, 0.28), 0.5, 0.6), center + Vector3(-2.4, 0.75, -5.1), Vector3.ZERO, self)
 	MeshLib.inst(MeshLib.cylinder(0.06, 1.5, 6), MeshLib.mat(Color(0.25, 0.26, 0.28), 0.5, 0.6), center + Vector3(2.4, 0.75, -5.1), Vector3.ZERO, self)
 
+static var _prop_meshes: Array = []
+
+static func _build_prop_meshes() -> void:
+	if not _prop_meshes.is_empty():
+		return
+	# oil drum with ribs
+	var g := Geo.new()
+	var blue := Color(0.12, 0.25, 0.5)
+	var prof := [Vector2(0.0, -0.45), Vector2(0.29, -0.45), Vector2(0.3, -0.43)]
+	for y in [-0.25, 0.0, 0.25]:
+		prof.append_array([Vector2(0.3, y - 0.03), Vector2(0.315, y - 0.015), Vector2(0.315, y + 0.015), Vector2(0.3, y + 0.03)])
+	prof.append_array([Vector2(0.3, 0.43), Vector2(0.29, 0.45), Vector2(0.0, 0.45)])
+	g.mat(blue, 0.45, 0.6).lathe(prof, 16)
+	g.mat(Color(0.2, 0.2, 0.2), 0.4, 0.8).ellipsoid(Vector3(0.15, 0.455, 0.0), Vector3(0.03, 0.008, 0.03), 8, 3)
+	_prop_meshes.append(g.mesh())
+	# wooden crate with planks and frame
+	g = Geo.new()
+	var wood := Color(0.62, 0.46, 0.27)
+	g.mat(wood.darkened(0.15), 0.85).rbox(Vector3.ZERO, Vector3(0.76, 0.76, 0.76), 0.02, 1)
+	for ax in 3:
+		for e in [-1.0, 1.0]:
+			for e2 in [-1.0, 1.0]:
+				var c := Vector3.ZERO
+				var sz := Vector3(0.82, 0.82, 0.82)
+				var o := (ax + 1) % 3
+				var o2 := (ax + 2) % 3
+				c[o] = e * 0.37
+				c[o2] = e2 * 0.37
+				sz[o] = 0.09
+				sz[o2] = 0.09
+				g.mat(wood, 0.8).rbox(c, sz, 0.012, 1)
+	for k in 3:
+		for f in [-1.0, 1.0]:
+			g.mat(wood.lightened(0.05), 0.8).rbox(Vector3(0, -0.2 + k * 0.2, f * 0.385), Vector3(0.66, 0.15, 0.02), 0.006, 1)
+	_prop_meshes.append(g.mesh())
+	# traffic cone with reflective stripes
+	g = Geo.new()
+	g.mat(Color(0.95, 0.38, 0.06), 0.6).lathe([Vector2(0.0, -0.33), Vector2(0.03, 0.35), Vector2(0.0, 0.36)], 14, false, true)
+	g.mat(Color(0.95, 0.38, 0.06), 0.6).lathe([Vector2(0.0, -0.35), Vector2(0.22, -0.35), Vector2(0.22, -0.32), Vector2(0.15, -0.31), Vector2(0.0, -0.31)], 4)
+	for y in [-0.05, 0.12]:
+		var r0 := lerpf(0.15, 0.03, (y + 0.33) / 0.68)
+		var r1 := lerpf(0.15, 0.03, (y + 0.08 + 0.33) / 0.68)
+		g.mat(Color(0.95, 0.95, 0.95), 0.3, 0.0, 0.1).lathe([Vector2(r0 + 0.003, y), Vector2(r1 + 0.003, y + 0.08)], 14, false, false)
+	g.mat(Color(0.95, 0.38, 0.06), 0.6).lathe([Vector2(0.0, -0.31), Vector2(0.15, -0.31), Vector2(0.03, 0.35), Vector2(0.0, 0.35)], 14)
+	_prop_meshes.append(g.mesh())
+	# trash bag
+	g = Geo.new()
+	g.mat(Color(0.05, 0.05, 0.06), 0.25, 0.1).ellipsoid(Vector3(0, -0.05, 0), Vector3(0.3, 0.32, 0.27), 12, 8)
+	g.mat(Color(0.05, 0.05, 0.06), 0.25, 0.1).capsule(Vector3(0, 0.25, 0), Vector3(0.02, 0.4, 0.0), 0.05, 0.03, 8, 1)
+	_prop_meshes.append(g.mesh())
+
 func _spawn_props() -> void:
 	var city := Game.city
-	var mats := [MeshLib.mat(Color(0.3, 0.32, 0.35), 0.6, 0.5), MeshLib.mat(Color(0.6, 0.45, 0.25), 0.9), MeshLib.mat(Color(0.2, 0.5, 0.2), 0.7, 0.3), MeshLib.mat(Color(0.95, 0.4, 0.1), 0.8)]
-	for i in 44:
+	_build_prop_meshes()
+	for i in 48:
 		var n := city.random_walk_node()
-		var pos := city.walk_pos(n.x, n.y) + Vector3(Game.randf_range(-1.0, 1.0), 0.5, Game.randf_range(-1.0, 1.0))
+		var pos := city.walk_pos(n.x, n.y) + Vector3(Game.randf_range(-1.0, 1.0), 0.55, Game.randf_range(-1.0, 1.0))
 		var rb := RigidBody3D.new()
 		rb.collision_layer = Game.bit(Game.L_PROP)
 		rb.collision_mask = Game.mask([Game.L_WORLD, Game.L_CAR, Game.L_PROP, Game.L_RAGDOLL, Game.L_PLAYER])
 		rb.mass = 12.0
 		rb.can_sleep = true
 		var kind := i % 4
+		var mi := MeshInstance3D.new()
+		mi.mesh = _prop_meshes[kind]
+		mi.material_override = MeshLib.atlas()
+		mi.visibility_range_end = 80.0
+		rb.add_child(mi)
 		if kind == 0:
-			MeshLib.inst(MeshLib.cylinder(0.35, 0.9, 8), mats[0], Vector3.ZERO, Vector3.ZERO, rb)
-			MeshLib.collider(MeshLib.capsule_shape(0.35, 1.0), Vector3.ZERO, Vector3.ZERO, rb)
+			MeshLib.collider(MeshLib.cylinder_shape(0.31, 0.9), Vector3.ZERO, Vector3.ZERO, rb)
+			rb.mass = 30.0
 		elif kind == 1:
-			MeshLib.inst(MeshLib.box(Vector3(0.8, 0.8, 0.8)), mats[1], Vector3.ZERO, Vector3.ZERO, rb)
 			MeshLib.collider(MeshLib.box_shape(Vector3(0.8, 0.8, 0.8)), Vector3.ZERO, Vector3.ZERO, rb)
+			rb.mass = 18.0
 		elif kind == 2:
-			MeshLib.inst(MeshLib.cylinder(0.3, 0.95, 8), mats[2], Vector3.ZERO, Vector3.ZERO, rb)
-			MeshLib.collider(MeshLib.capsule_shape(0.3, 1.05), Vector3.ZERO, Vector3.ZERO, rb)
-		else:
-			MeshLib.inst(MeshLib.cone(0.25, 0.7, 7), mats[3], Vector3.ZERO, Vector3.ZERO, rb)
-			MeshLib.collider(MeshLib.box_shape(Vector3(0.4, 0.7, 0.4)), Vector3.ZERO, Vector3.ZERO, rb)
+			MeshLib.collider(MeshLib.cylinder_shape(0.15, 0.68), Vector3.ZERO, Vector3.ZERO, rb)
 			rb.mass = 3.0
+		else:
+			MeshLib.collider(MeshLib.sphere_shape(0.3), Vector3(0, -0.05, 0), Vector3.ZERO, rb)
+			rb.mass = 6.0
 		rb.position = pos
 		add_child(rb)
 
@@ -280,6 +355,8 @@ func _process(delta: float) -> void:
 		_autotest()
 	if shot_path != "":
 		_screenshot_mode()
+	if soak:
+		_soak()
 
 # ---------------------------------------------------------------- headless self-test
 func _autotest() -> void:
@@ -314,9 +391,9 @@ func _autotest() -> void:
 			print("[autotest] tk release + car")
 			player.right.velocity = Vector3(0, 0, -5)
 			player.right.tk_release()
-			var car := spawn_car(true, player.global_position, 0.0, 30.0)
+			var car := spawn_car(true, player.global_position, 0.0, 40.0)
 			await get_tree().physics_frame
-			car.global_position = player.global_position + Vector3(2.5, 0.4, 0)
+			player.global_position = car.door_global() + Vector3(0, 0.2, 0)
 			player.enter_car(car)
 			player.right.sim_trigger = 1.0
 		215:
@@ -333,10 +410,47 @@ func _autotest() -> void:
 			var ped := spawn_ped_at(player.global_position + Vector3(0, 0, -1.5), false, false)
 			await get_tree().physics_frame
 			player.right.grab_body(ped)
-		260:
+		240:
+			print("[autotest] ragdoll joints + gore")
 			player.right.release()
+			var p1 := spawn_ped_at(player.global_position + Vector3(3, 0.2, 0), false, false)
+			var p2 := spawn_ped_at(player.global_position + Vector3(-3, 0.2, 0), true, true)
+			await get_tree().physics_frame
+			p1.go_ragdoll(Vector3(0, 0, 0))
+			var p3 := spawn_ped_at(player.global_position + Vector3(0, 0.2, 3), false, false)
+			await get_tree().physics_frame
+			p3.go_ragdoll(Vector3.ZERO)
+			for rp in [p1, p3]:
+				var rr: Ragdoll = rp.ragdoll
+				for b in rr.bodies:
+					b.freeze = true
+				rr.bodies[BodyGen.B_FORE_R].freeze = false
+				rr.bodies[BodyGen.B_SHIN_R].freeze = false
+			# p1: push forearm + shin forward (-Z); p3: push them backward (+Z)
+			var r1: Ragdoll = p1.ragdoll
+			var r3: Ragdoll = p3.ragdoll
+			for pair in [[r1, -1.0], [r3, 1.0]]:
+				var rr: Ragdoll = pair[0]
+				for bi in [BodyGen.B_FORE_R, BodyGen.B_SHIN_R]:
+					var body: RigidBody3D = rr.bodies[bi]
+					body.apply_impulse(body.global_transform.basis.z * pair[1] * 6.0, body.global_transform.basis * Vector3(0, -0.3, 0))
+			test_ped3 = p3
+			p2.take_hit(500.0, Vector3(0, 50, 0), p2.global_position + Vector3(0, 1.1, 0), "pelvis", "sharp")
+			if p2.ragdoll:
+				p2.ragdoll.dismember(BodyGen.B_CHEST, Vector3(0, 30, 0))
+				p2.ragdoll.pop_head()
+			test_ped = p1
+		300:
+			for pair in [[test_ped, "pushed forward"], [test_ped3, "pushed backward"]]:
+				var tp: Ped = pair[0]
+				if is_instance_valid(tp) and tp.ragdoll:
+					var r := tp.ragdoll
+					var elbow := _hinge_angle(r.bodies[BodyGen.B_ARM_R], r.bodies[BodyGen.B_FORE_R])
+					var knee := _hinge_angle(r.bodies[BodyGen.B_THIGH_R], r.bodies[BodyGen.B_SHIN_R])
+					print("[autotest] joints %s: elbow %.0f deg, knee %.0f deg (positive = forward)" % [pair[1], rad_to_deg(elbow), rad_to_deg(knee)])
+		310:
 			player.take_damage(500.0, Vector3.ZERO)
-		330:
+		335:
 			print("[autotest] stats: peds=%d cars=%d ragdolls=%d score=%d wanted=%d" % [get_tree().get_nodes_in_group("peds").size(), get_tree().get_nodes_in_group("cars").size(), Ragdoll.count, Game.score, Game.wanted_stars])
 		360:
 			print("[autotest] done")
@@ -349,26 +463,46 @@ func _screenshot_mode() -> void:
 	match frame:
 		5:
 			var base := player.global_position
-			shot_car = spawn_car(true, base, 0.0, 30.0)
+			for c in get_tree().get_nodes_in_group("cars"):
+				if c.global_position.distance_to(base) < 60.0:
+					c.queue_free()
+			for p in get_tree().get_nodes_in_group("peds"):
+				if p.global_position.distance_to(base) < 25.0:
+					p.queue_free()
 			var node := Game.city.nearest_road_node(base)
-			var nxt := Game.city.next_road_node(node, Vector2i(-9, -9), base)
-			shot_car.place_on_road(node, nxt, 0.55)
+			var nxt := Game.city.next_road_node(node, Vector2i(-9, -9), base + Vector3(30, 0, 0))
+			shot_car = Car.create(true)
+			add_child(shot_car)
+			shot_car.place_on_road(node, nxt, 0.42)
 			shot_car.mode = Car.Mode.PARKED
 			shot_car.set_siren(true)
-			for i in 6:
-				var p := spawn_ped_at(shot_car.global_position + Vector3(Game.randf_range(-5, 5), 0, Game.randf_range(-5, 5)), i % 2 == 0, true)
+			var c2 := Car.create(false, Color(0.75, 0.75, 0.78), "suv")
+			add_child(c2)
+			c2.place_on_road(node, nxt, 0.62)
+			c2.mode = Car.Mode.PARKED
+		8:
+			var door := shot_car.door_global()
+			for i in 5:
+				var p := spawn_ped_at(door + Vector3(Game.randf_range(-4, 4), 0.2, Game.randf_range(-5, 5)), i < 2, true)
+				p.state = Ped.State.WANDER
+			shot_cop = spawn_ped_at(player.global_position + Vector3(0.5, 0.0, -3.2), true, true)
+			shot_cop.rotation.y = 0.0
 		20:
 			var i := 0
 			for p in get_tree().get_nodes_in_group("peds"):
-				if p.global_position.distance_to(shot_car.global_position) < 8.0 and i < 4:
-					var part: String = ["head", "arm_l", "torso", "leg_r"][i]
+				if p != shot_cop and p.global_position.distance_to(shot_car.global_position) < 9.0 and i < 4:
+					var part: String = ["head", "arm_l", "chest", "shin_r"][i]
 					var kind: String = ["bullet", "sharp", "explosion", "sharp"][i]
 					p.take_hit(400.0, Vector3(Game.randf_range(-40, 40), 60, Game.randf_range(-40, 40)), p.global_position + Vector3(0, 1.2, 0), part, kind)
 					i += 1
+		60:
+			Game.wanted = 3.0
+			Game._update_stars()
 		140:
 			var target := shot_car.global_position
 			player.camera.top_level = true
-			cam.global_transform = Transform3D(Basis(), target + Vector3(7.5, 3.2, 7.5)).looking_at(target + Vector3(0, 0.6, 0), Vector3.UP)
+			var side := shot_car.global_transform.basis.x
+			cam.global_transform = Transform3D(Basis(), target + side * -6.5 + Vector3(0, 1.7, 0) + shot_car.global_transform.basis.z * 4.0).looking_at(target + Vector3(0, 0.7, 0), Vector3.UP)
 		150:
 			_save_shot("_street")
 		151:
@@ -377,19 +511,56 @@ func _screenshot_mode() -> void:
 		160:
 			_save_shot("_city")
 		161:
-			cam.global_transform = Transform3D(Basis(), player.global_position + Vector3(0, 1.7, 0)).looking_at(player.global_position + Vector3(0, 1.6, -5), Vector3.UP)
+			if is_instance_valid(shot_cop):
+				var h := shot_cop.global_position + Vector3(0, 1.6, 0)
+				cam.global_transform = Transform3D(Basis(), h + shot_cop.global_transform.basis.z * -2.3 + Vector3(0.6, 0.05, 0)).looking_at(h - Vector3(0, 0.25, 0), Vector3.UP)
 		170:
-			_save_shot("_spawn")
+			_save_shot("_cop")
 		171:
 			var focus := shot_car.global_position
 			for r in get_children():
 				if r is Ragdoll:
 					focus = (r as Ragdoll).torso().global_position
 					break
-			cam.global_transform = Transform3D(Basis(), focus + Vector3(2.6, 1.9, 2.6)).looking_at(focus, Vector3.UP)
+			cam.global_transform = Transform3D(Basis(), focus + Vector3(2.4, 1.8, 2.4)).looking_at(focus, Vector3.UP)
 		180:
 			_save_shot("_gore")
+		181:
+			cam.top_level = false
+			cam.transform = Transform3D.IDENTITY
+			cam.position = Vector3(0, 1.7, 0)
+			player.origin.rotation.y = PI * 0.5
+		190:
+			_save_shot("_eye")
 			get_tree().quit()
+
+var shot_cop: Ped
+
+## Long unattended run with a high wanted level (catches runtime errors).
+func _soak() -> void:
+	player.health = 100.0
+	if frame % 300 == 1:
+		Game.wanted = 4.0
+		Game._update_stars()
+		print("[soak] t=%ds peds=%d cops=%d cars=%d ragdolls=%d fps=%d" % [frame / 60, get_tree().get_nodes_in_group("peds").size(), get_tree().get_nodes_in_group("cops").size(), get_tree().get_nodes_in_group("cars").size(), Ragdoll.count, Engine.get_frames_per_second()])
+		# stir things up: push and hit people around the player
+		player.right.force_push()
+		for p in get_tree().get_nodes_in_group("peds"):
+			if p.global_position.distance_to(player.global_position) < 20.0 and Game.rng.randf() < 0.3:
+				p.take_hit(60.0, Vector3(0, 30, 0), p.global_position + Vector3(0, 1.0, 0), "", ["punch", "sharp", "bullet", "throw"][Game.randi_range(0, 3)])
+	if frame > 2400:
+		print("[soak] done")
+		get_tree().quit()
+
+var test_ped: Ped
+var test_ped3: Ped
+
+## Signed bend of child relative to parent around the parent's X axis.
+## Positive = the child swung towards the parent's -Z (forward).
+func _hinge_angle(parent: RigidBody3D, child: RigidBody3D) -> float:
+	var rel := parent.global_transform.basis.inverse() * child.global_transform.basis
+	var down := rel * Vector3.DOWN
+	return atan2(-down.z, -down.y)
 
 func _save_shot(suffix: String) -> void:
 	var img := get_viewport().get_texture().get_image()

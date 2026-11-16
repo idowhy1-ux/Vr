@@ -26,7 +26,7 @@ var light_red: MeshInstance3D
 var light_blue: MeshInstance3D
 var brake_l: MeshInstance3D
 var brake_r: MeshInstance3D
-var driver_meshes: Array[MeshInstance3D] = []
+var driver_meshes: Array[Node3D] = []
 var wheels: Array[VehicleWheel3D] = []
 var throttle_in := 0.0
 var brake_in := 0.0
@@ -41,18 +41,38 @@ var age := 0.0
 var fire: CPUParticles3D
 var steer_wheel: Node3D
 
-const SEAT := Vector3(-0.42, 1.06, 0.2)       # eye position for the driver
-const DOOR := Vector3(-1.7, 0.0, 0.15)
+var body_type := "sedan"
+var dims: Dictionary
+var body_mi: MeshInstance3D
+var interior_mi: MeshInstance3D
+var dent_arrays: Array = []
+var last_dent := 0.0
+var dent_total := 0.0
 
-static func create(police: bool, col: Color = Color.RED) -> Car:
+static func create(police: bool, col: Color = Color.RED, type: String = "") -> Car:
 	var c := Car.new()
 	c.is_police = police
 	c.color = col
+	if police:
+		c.body_type = "police"
+	elif type != "":
+		c.body_type = type
+	else:
+		var r := Game.rng.randf()
+		c.body_type = "sedan" if r < 0.38 else ("hatch" if r < 0.6 else ("suv" if r < 0.8 else ("taxi" if r < 0.9 else "van")))
 	return c
+
+## Driver eye position (car local).
+func seat_local() -> Vector3:
+	return Vector3(-0.38, dims["bot"] + 0.95, dims["ws"] + 0.95)
+
+func door_local() -> Vector3:
+	return Vector3(-(dims["hw"] + 0.75), 0.0, dims["ws"] + 0.85)
 
 func _ready() -> void:
 	add_to_group("cars")
-	mass = 1300.0
+	dims = CarGen.dims(body_type)
+	mass = dims["mass"]
 	collision_layer = Game.bit(Game.L_CAR)
 	collision_mask = Game.mask([Game.L_WORLD, Game.L_CAR, Game.L_RAGDOLL, Game.L_PROP, Game.L_NPC, Game.L_PLAYER])
 	center_of_mass_mode = RigidBody3D.CENTER_OF_MASS_MODE_CUSTOM
@@ -63,8 +83,12 @@ func _ready() -> void:
 	linear_damp = 0.05
 	angular_damp = 0.6
 	can_sleep = true
-	MeshLib.collider(MeshLib.box_shape(Vector3(1.9, 0.55, 4.4)), Vector3(0, 0.45, 0), Vector3.ZERO, self)
-	MeshLib.collider(MeshLib.box_shape(Vector3(1.6, 0.5, 2.1)), Vector3(0, 0.98, 0.2), Vector3.ZERO, self)
+	var d := dims
+	var low_h: float = d["belt"] - d["bot"]
+	MeshLib.collider(MeshLib.box_shape(Vector3(d["hw"] * 2.0, low_h, d["len"] * 0.97)), Vector3(0, d["bot"] + low_h * 0.5, 0), Vector3.ZERO, self)
+	var cab_h: float = d["roof"] - d["belt"]
+	var cab_l: float = d["rw"] - d["ws"]
+	MeshLib.collider(MeshLib.box_shape(Vector3(d["hw"] * 1.7, cab_h, cab_l * 0.85)), Vector3(0, d["belt"] + cab_h * 0.5, (d["ws"] + d["rw"]) * 0.5), Vector3.ZERO, self)
 	_build_visual()
 	_build_wheels()
 	body_entered.connect(_on_body_entered)
@@ -75,90 +99,50 @@ func _ready() -> void:
 	if Game.gore:
 		Game.gore.register_blob(self, 4.6)
 
-static var _mesh_cache: Dictionary = {}
-
-static func _cached(key: String, parts: Array) -> ArrayMesh:
-	if not _mesh_cache.has(key):
-		_mesh_cache[key] = MeshLib.build(parts)
-	return _mesh_cache[key]
-
-static func _body_parts(police: bool, paint_c: Color) -> Array:
-	var P := []
-	var glass := Color(0.12, 0.16, 0.22)
-	var dark := Color(0.08, 0.08, 0.09)
-	var paint := Color(0.95, 0.95, 0.95) if police else paint_c
-	P.append(MeshLib.part(MeshLib.box(Vector3(1.9, 0.5, 4.4)), Vector3(0, 0.45, 0), Vector3.ZERO, paint, 0.3, 0.5))
-	P.append(MeshLib.part(MeshLib.box(Vector3(1.6, 0.5, 2.1)), Vector3(0, 0.95, 0.2), Vector3.ZERO, glass, 0.08, 0.6))
-	P.append(MeshLib.part(MeshLib.box(Vector3(1.64, 0.06, 2.14)), Vector3(0, 1.22, 0.2), Vector3.ZERO, paint, 0.3, 0.5))
-	P.append(MeshLib.part(MeshLib.box(Vector3(1.8, 0.1, 1.2)), Vector3(0, 0.74, -1.5), Vector3.ZERO, paint, 0.3, 0.5))
-	P.append(MeshLib.part(MeshLib.box(Vector3(1.8, 0.1, 0.9)), Vector3(0, 0.74, 1.72), Vector3.ZERO, paint, 0.3, 0.5))
-	P.append(MeshLib.part(MeshLib.box(Vector3(1.95, 0.25, 0.2)), Vector3(0, 0.3, -2.25), Vector3.ZERO, dark, 0.5, 0.3))
-	P.append(MeshLib.part(MeshLib.box(Vector3(1.95, 0.25, 0.2)), Vector3(0, 0.3, 2.25), Vector3.ZERO, dark, 0.5, 0.3))
-	P.append(MeshLib.part(MeshLib.box(Vector3(1.94, 0.08, 4.0)), Vector3(0, 0.24, 0), Vector3.ZERO, dark, 0.6, 0.2))
-	# headlights (emissive) and grille
-	P.append(MeshLib.part(MeshLib.box(Vector3(0.35, 0.15, 0.06)), Vector3(-0.65, 0.55, -2.2), Vector3.ZERO, Color(1.0, 0.97, 0.85), 0.3, 0.0, 0.6))
-	P.append(MeshLib.part(MeshLib.box(Vector3(0.35, 0.15, 0.06)), Vector3(0.65, 0.55, -2.2), Vector3.ZERO, Color(1.0, 0.97, 0.85), 0.3, 0.0, 0.6))
-	P.append(MeshLib.part(MeshLib.box(Vector3(0.7, 0.2, 0.05)), Vector3(0, 0.5, -2.21), Vector3.ZERO, dark, 0.5, 0.3))
-	# side mirrors and door lines
-	P.append(MeshLib.part(MeshLib.box(Vector3(0.18, 0.1, 0.1)), Vector3(-0.92, 0.95, -0.75), Vector3.ZERO, dark, 0.4, 0.4))
-	P.append(MeshLib.part(MeshLib.box(Vector3(0.18, 0.1, 0.1)), Vector3(0.92, 0.95, -0.75), Vector3.ZERO, dark, 0.4, 0.4))
-	P.append(MeshLib.part(MeshLib.box(Vector3(1.92, 0.4, 0.02)), Vector3(0, 0.5, 0.25), Vector3.ZERO, paint.darkened(0.35), 0.5, 0.3))
-	# interior: dashboard and steering column
-	P.append(MeshLib.part(MeshLib.box(Vector3(1.56, 0.16, 0.42)), Vector3(0, 0.78, -0.62), Vector3(-8, 0, 0), dark, 0.7))
-	P.append(MeshLib.part(MeshLib.cylinder(0.025, 0.3, 6), Vector3(-0.42, 0.82, -0.38), Vector3(60, 0, 0), dark, 0.6))
-	if police:
-		P.append(MeshLib.part(MeshLib.box(Vector3(1.92, 0.22, 2.0)), Vector3(0, 0.45, 0), Vector3.ZERO, dark, 0.35, 0.5))
-		P.append(MeshLib.part(MeshLib.box(Vector3(0.6, 0.02, 0.6)), Vector3(0, 1.26, 0.2), Vector3.ZERO, Color(0.1, 0.2, 0.6), 0.5))
-		P.append(MeshLib.part(MeshLib.box(Vector3(0.12, 0.16, 0.25)), Vector3(0, 1.33, 0.2), Vector3.ZERO, Color(0.8, 0.8, 0.82), 0.2, 0.9))
-		P.append(MeshLib.part(MeshLib.box(Vector3(1.95, 0.22, 0.12)), Vector3(0, 0.32, -2.36), Vector3.ZERO, dark, 0.5, 0.4))
-	return P
-
 func _build_visual() -> void:
-	var key := "police" if is_police else "civ_" + color.to_html()
-	var body := MeshLib.inst_built(_cached(key, _body_parts(is_police, color)), Vector3.ZERO, Vector3.ZERO, self)
-	body_meshes = [body]
-	if is_police:
-		light_red = MeshLib.inst(MeshLib.box(Vector3(0.4, 0.16, 0.25)), MeshLib.mat(Color(0.6, 0.05, 0.05), 0.4), Vector3(-0.35, 1.33, 0.2), Vector3.ZERO, self)
-		light_blue = MeshLib.inst(MeshLib.box(Vector3(0.4, 0.16, 0.25)), MeshLib.mat(Color(0.05, 0.1, 0.6), 0.4), Vector3(0.35, 1.33, 0.2), Vector3.ZERO, self)
-		light_red.visibility_range_end = 0.0
-		light_blue.visibility_range_end = 0.0
-	# both tail lights in one mesh (material swapped when braking)
-	var tail_mesh := _cached("tail", [
-		MeshLib.part(MeshLib.box(Vector3(0.35, 0.15, 0.06)), Vector3(-0.65, 0.55, 2.2), Vector3.ZERO, Color.WHITE),
-		MeshLib.part(MeshLib.box(Vector3(0.35, 0.15, 0.06)), Vector3(0.65, 0.55, 2.2), Vector3.ZERO, Color.WHITE)])
+	var m := CarGen.meshes(body_type, color)
+	body_mi = MeshInstance3D.new()
+	body_mi.mesh = m["body"]
+	body_mi.material_override = MeshLib.atlas()
+	body_mi.visibility_range_end = 220.0
+	add_child(body_mi)
+	body_meshes = [body_mi]
+	interior_mi = MeshInstance3D.new()
+	interior_mi.mesh = m["interior"]
+	interior_mi.material_override = MeshLib.atlas()
+	interior_mi.visibility_range_end = 14.0
+	interior_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(interior_mi)
 	brake_l = MeshInstance3D.new()
-	brake_l.mesh = tail_mesh
+	brake_l.mesh = m["tail"]
 	brake_l.material_override = MeshLib.mat(Color(0.6, 0.05, 0.05), 0.4)
-	brake_l.visibility_range_end = 70.0
+	brake_l.visibility_range_end = 90.0
+	brake_l.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(brake_l)
 	brake_r = brake_l
+	var d := dims
+	if is_police:
+		var lz: float = lerpf(d["rf"], d["rr"], 0.35)
+		light_red = MeshLib.inst(MeshLib.box(Vector3(0.5, 0.11, 0.24)), MeshLib.mat(Color(0.6, 0.05, 0.05), 0.4), Vector3(-0.3, d["roof"] + 0.1, lz), Vector3.ZERO, self)
+		light_blue = MeshLib.inst(MeshLib.box(Vector3(0.5, 0.11, 0.24)), MeshLib.mat(Color(0.05, 0.1, 0.6), 0.4), Vector3(0.3, d["roof"] + 0.1, lz), Vector3.ZERO, self)
+		light_red.visibility_range_end = 0.0
+		light_blue.visibility_range_end = 0.0
 	# steering wheel: tilted mount + spinning wheel
 	var tilt := Node3D.new()
-	tilt.position = Vector3(-0.42, 0.9, -0.27)
-	tilt.rotation_degrees = Vector3(60, 0, 0)
+	tilt.position = Vector3(-0.38, d["belt"] - 0.02, d["ws"] + 0.48)
+	tilt.rotation_degrees = Vector3(62, 0, 0)
 	add_child(tilt)
-	var torus := TorusMesh.new()
-	torus.inner_radius = 0.15
-	torus.outer_radius = 0.18
-	torus.rings = 16
-	torus.ring_segments = 6
-	var sw_mesh := _cached("steer", [
-		MeshLib.part(torus, Vector3.ZERO, Vector3.ZERO, Color(0.08, 0.08, 0.09), 0.6),
-		MeshLib.part(MeshLib.box(Vector3(0.3, 0.02, 0.03)), Vector3.ZERO, Vector3.ZERO, Color(0.08, 0.08, 0.09), 0.6)])
-	steer_wheel = MeshLib.inst_built(sw_mesh, Vector3.ZERO, Vector3.ZERO, tilt, 25.0)
-	# occupants (one merged mesh, hidden when they get out)
-	var skin: Color = MeshLib.SKIN[Game.randi_range(0, MeshLib.SKIN.size() - 1)]
-	var shirt := Color(0.12, 0.2, 0.45) if is_police else Game.rand_color_variant(MeshLib.SHIRTS[Game.randi_range(0, MeshLib.SHIRTS.size() - 1)])
-	var occ := [MeshLib.part(MeshLib.box(Vector3(0.36, 0.46, 0.22)), Vector3(-0.42, 0.72, 0.2), Vector3.ZERO, shirt, 0.9),
-		MeshLib.part(MeshLib.sphere(0.11, 8, 5), Vector3(-0.42, 1.04, 0.2), Vector3.ZERO, skin, 0.7)]
+	steer_wheel = MeshLib.inst_built(_steer_mesh(), Vector3.ZERO, Vector3.ZERO, tilt, 25.0)
+	# occupants: real people sitting in the seats
+	driver_meshes = []
+	var occupants := 2 if is_police else 1
+	for i in occupants:
+		var person := Ped.make_seated(is_police)
+		person.position = Vector3(-0.38 if i == 0 else 0.38, d["bot"] + 0.36 - 0.98, d["ws"] + 0.98)
+		add_child(person)
+		driver_meshes.append(person)
 	if is_police:
-		occ.append(MeshLib.part(MeshLib.box(Vector3(0.36, 0.46, 0.22)), Vector3(0.42, 0.72, 0.2), Vector3.ZERO, shirt, 0.9))
-		occ.append(MeshLib.part(MeshLib.sphere(0.11, 8, 5), Vector3(0.42, 1.04, 0.2), Vector3.ZERO, skin, 0.7))
-		occ.append(MeshLib.part(MeshLib.box(Vector3(0.24, 0.06, 0.24)), Vector3(-0.42, 1.13, 0.2), Vector3.ZERO, Color(0.08, 0.1, 0.22), 0.9))
-		occ.append(MeshLib.part(MeshLib.box(Vector3(0.24, 0.06, 0.24)), Vector3(0.42, 1.13, 0.2), Vector3.ZERO, Color(0.08, 0.1, 0.22), 0.9))
 		passengers = 1
-	var occ_key := "occ_%s_%s_%s" % [is_police, skin.to_html(), shirt.to_html()]
-	driver_meshes = [MeshLib.inst_built(_cached(occ_key, occ), Vector3.ZERO, Vector3.ZERO, self, 60.0)]
 	if fire == null:
 		fire = CPUParticles3D.new()
 		fire.emitting = false
@@ -173,30 +157,110 @@ func _build_visual() -> void:
 		fire.gravity = Vector3(0, 2.0, 0)
 		fire.scale_amount_min = 0.4
 		fire.scale_amount_max = 1.5
-		fire.position = Vector3(0, 0.9, -0.8)
+		fire.position = Vector3(0, d["hood"], d["ws"] - 0.6)
 		add_child(fire)
 
+static var _steer: ArrayMesh
+static func _steer_mesh() -> ArrayMesh:
+	if _steer:
+		return _steer
+	var g := Geo.new()
+	var dark := Color(0.06, 0.06, 0.065)
+	var rings := []
+	for k in 16:
+		var a := TAU * k / 16.0
+		rings.append(Geo.ring_axis(Vector3(cos(a) * 0.18, 0, sin(a) * 0.18), Vector3(-sin(a), 0, cos(a)), 0.016, 0.016, 8))
+	rings.append(rings[0])
+	g.mat(dark, 0.55).loft(rings, false, false)
+	g.mat(dark, 0.6).rbox(Vector3.ZERO, Vector3(0.12, 0.05, 0.1), 0.02, 1)
+	g.mat(dark, 0.6).rbox(Vector3(0, 0, 0.08), Vector3(0.03, 0.02, 0.16), 0.008, 1)
+	g.mat(dark, 0.6).rbox(Vector3(0.09, 0, 0), Vector3(0.18, 0.02, 0.03), 0.008, 1)
+	g.mat(dark, 0.6).rbox(Vector3(-0.09, 0, 0), Vector3(0.18, 0.02, 0.03), 0.008, 1)
+	_steer = g.mesh()
+	return _steer
+
 func _build_wheels() -> void:
-	var wheel_mesh := _cached("wheel", [
-		MeshLib.part(MeshLib.cylinder(0.35, 0.26, 12), Vector3.ZERO, Vector3(0, 0, 90), Color(0.06, 0.06, 0.06), 0.9),
-		MeshLib.part(MeshLib.cylinder(0.22, 0.28, 8), Vector3.ZERO, Vector3(0, 0, 90), Color(0.75, 0.75, 0.78), 0.25, 0.9)])
-	for p in [Vector3(-0.85, 0.35, -1.45), Vector3(0.85, 0.35, -1.45), Vector3(-0.85, 0.35, 1.45), Vector3(0.85, 0.35, 1.45)]:
+	var d := dims
+	var wr: float = d["wr"]
+	var wx: float = d["hw"] - 0.11
+	var wz: float = d["wb"] * 0.5
+	for p in [Vector3(-wx, wr, -wz), Vector3(wx, wr, -wz), Vector3(-wx, wr, wz), Vector3(wx, wr, wz)]:
 		var w := VehicleWheel3D.new()
-		w.position = p
+		w.position = p + Vector3(0, 0.08, 0)
 		w.use_as_steering = p.z < 0.0
 		w.use_as_traction = true
-		w.wheel_radius = 0.35
-		w.wheel_rest_length = 0.25
-		w.suspension_travel = 0.22
-		w.suspension_stiffness = 40.0
-		w.suspension_max_force = 14000.0
+		w.wheel_radius = wr
+		w.wheel_rest_length = 0.22
+		w.suspension_travel = 0.2
+		w.suspension_stiffness = 40.0 if body_type != "van" else 50.0
+		w.suspension_max_force = mass * 11.0
 		w.damping_compression = 0.6
 		w.damping_relaxation = 0.8
 		w.wheel_friction_slip = 3.2
 		w.wheel_roll_influence = 0.05
 		add_child(w)
-		MeshLib.inst_built(wheel_mesh, Vector3.ZERO, Vector3.ZERO, w, 90.0)
+		MeshLib.inst_built(d.get("wheel_mesh", CarGen.wheel_mesh(wr)), Vector3.ZERO, Vector3.ZERO, w, 90.0)
 		wheels.append(w)
+
+## Crumple the body around a local point (crash damage you can see).
+func dent(world_pos: Vector3, dir_world: Vector3, amount: float) -> void:
+	var now := Time.get_ticks_msec() / 1000.0
+	if now - last_dent < 0.25 or dent_total > 1.2 or amount < 0.01:
+		return
+	last_dent = now
+	amount = minf(amount, 0.18)
+	dent_total += amount
+	if dent_arrays.is_empty():
+		dent_arrays = body_mi.mesh.surface_get_arrays(0)
+	var lp := to_local(world_pos)
+	var ld := (global_transform.basis.inverse() * dir_world).normalized()
+	var verts: PackedVector3Array = dent_arrays[Mesh.ARRAY_VERTEX]
+	var radius := 0.7
+	var moved := false
+	for i in verts.size():
+		var dd := verts[i].distance_to(lp)
+		if dd < radius:
+			var f := 1.0 - dd / radius
+			verts[i] += ld * amount * f * f + Vector3(Game.randf_range(-1, 1), Game.randf_range(-1, 1), Game.randf_range(-1, 1)) * 0.012 * f
+			moved = true
+	if not moved:
+		return
+	dent_arrays[Mesh.ARRAY_VERTEX] = verts
+	# recompute normals so the dent catches the light
+	var idx: PackedInt32Array = dent_arrays[Mesh.ARRAY_INDEX]
+	var nrm := PackedVector3Array()
+	nrm.resize(verts.size())
+	var i := 0
+	while i + 2 < idx.size():
+		var a := idx[i]
+		var b := idx[i + 1]
+		var c := idx[i + 2]
+		var n := (verts[c] - verts[a]).cross(verts[b] - verts[a])
+		nrm[a] += n
+		nrm[b] += n
+		nrm[c] += n
+		i += 3
+	for k in nrm.size():
+		nrm[k] = nrm[k].normalized() if nrm[k].length() > 0.0 else Vector3.UP
+	dent_arrays[Mesh.ARRAY_NORMAL] = nrm
+	var am := ArrayMesh.new()
+	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, dent_arrays)
+	body_mi.mesh = am
+
+## Point on the car's skin in the direction of `toward` (world).
+func hull_point(toward: Vector3) -> Vector3:
+	var l := to_local(toward)
+	var d := dims
+	var ext := Vector3(d["hw"], (d["belt"] - d["bot"]) * 0.5, d["len"] * 0.5)
+	var c := Vector3(0, (d["belt"] + d["bot"]) * 0.5, 0)
+	var dir := l - c
+	if dir.length() < 0.001:
+		return global_position
+	var t := INF
+	for ax in 3:
+		if absf(dir[ax]) > 0.0001:
+			t = minf(t, ext[ax] / absf(dir[ax]))
+	return to_global(c + dir * t)
 
 ## Place the car on a lane heading from node a to node b.
 func place_on_road(a: Vector2i, b: Vector2i, t: float) -> void:
@@ -217,10 +281,10 @@ func forward_speed() -> float:
 	return linear_velocity.dot(-global_transform.basis.z)
 
 func seat_global() -> Transform3D:
-	return global_transform * Transform3D(Basis(), SEAT)
+	return global_transform * Transform3D(Basis(), seat_local())
 
 func door_global() -> Vector3:
-	return global_transform * DOOR
+	return global_transform * door_local()
 
 # ---------------------------------------------------------------- update
 func _physics_process(delta: float) -> void:
@@ -484,10 +548,12 @@ func take_hit(dmg: float, impulse: Vector3, pos: Vector3, part: String, kind: St
 		dmg *= 0.6
 		apply_impulse(impulse * 25.0, pos - global_position)
 		Game.sfx.play("clank", pos, -2.0)
+		dent(pos, impulse, clampf(impulse.length() / 900.0, 0.02, 0.12))
 	elif kind == "bullet":
 		Game.sfx.play("clank", pos, -6.0, 1.4)
 	elif kind == "throw":
 		Game.sfx.play("clank", pos, 0.0)
+		dent(pos, impulse, clampf(dmg / 300.0, 0.02, 0.14))
 	health -= dmg
 	last_hit = Time.get_ticks_msec() / 1000.0
 	if is_police:
@@ -520,9 +586,13 @@ func _on_body_entered(body: Node) -> void:
 		if is_instance_valid(rd) and speed > 4.0:
 			var part: String = body.get_meta("part")
 			rd.take_hit(speed * 6.0, v * 8.0, body.global_position, part, "car")
-			if speed > 12.0 and part != "torso":
-				rd.dismember(part, v * 3.0)
+			if speed > 12.0 and part not in ["chest", "pelvis"]:
+				rd.dismember(int(body.get_meta("bone")), v * 3.0)
 	elif body is Car:
+		if speed > 5.0:
+			var hp := hull_point((body as Car).global_position)
+			dent(hp, (global_position - (body as Car).global_position), speed * 0.008)
+			(body as Car).dent((body as Car).hull_point(global_position), ((body as Car).global_position - global_position), speed * 0.008)
 		if speed > 7.0:
 			health -= speed * 1.5
 			(body as Car).health -= speed * 1.5
@@ -537,6 +607,9 @@ func _on_body_entered(body: Node) -> void:
 		body.take_damage(speed * 6.0, v * 0.8 + Vector3.UP * 3.0)
 		Game.sfx.play("thud", contact, 2.0)
 	elif body is StaticBody3D:
+		if speed > 6.0:
+			var fwd := v.normalized()
+			dent(global_position + fwd * dims["len"] * 0.5 + Vector3(0, dims["hood"] - 0.25, 0), -fwd, speed * 0.008)
 		if speed > 9.0:
 			health -= speed * 1.2
 			Game.sfx.play("clank", contact, 0.0, 0.7)

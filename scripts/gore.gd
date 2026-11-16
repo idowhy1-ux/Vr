@@ -21,6 +21,10 @@ var blob_users: Array = []   # weak refs to Node3D that want a blob shadow
 const MAX_BLOBS := 64
 
 var blood_mat: StandardMaterial3D
+var wound_mat: StandardMaterial3D
+var flesh_mat: StandardMaterial3D
+var guts_mat: StandardMaterial3D
+var pools: Array = []          # growing blood pools under corpses
 var tracer_mat: StandardMaterial3D
 var tracers: Array[MeshInstance3D] = []
 var tracer_index := 0
@@ -33,6 +37,15 @@ func _ready() -> void:
 	blood_mat.metallic = 0.0
 	blood_mat.metallic_specular = 0.25
 	blood_mat.specular_mode = BaseMaterial3D.SPECULAR_SCHLICK_GGX
+	wound_mat = StandardMaterial3D.new()
+	wound_mat.albedo_color = Color(0.3, 0.0, 0.01)
+	wound_mat.roughness = 0.25
+	flesh_mat = StandardMaterial3D.new()
+	flesh_mat.albedo_color = Color(0.55, 0.06, 0.07)
+	flesh_mat.roughness = 0.35
+	guts_mat = StandardMaterial3D.new()
+	guts_mat.albedo_color = Color(0.62, 0.3, 0.32)
+	guts_mat.roughness = 0.3
 	var drop := MeshLib.sphere(0.035, 5, 3)
 	for i in SPRAY_POOL:
 		var p := _make_spray(drop, 26, 0.75)
@@ -174,7 +187,8 @@ func register_blob(n: Node3D, size: float) -> void:
 		return
 	blob_users.append({"node": weakref(n), "size": size})
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	_grow_pools(delta)
 	# Update blob shadows under cars / people (cheap fake shadows).
 	var i := 0
 	var alive: Array = []
@@ -186,7 +200,7 @@ func _process(_delta: float) -> void:
 		if i < MAX_BLOBS:
 			var p := n.global_position
 			var s: float = u["size"]
-			var t := Transform3D(Basis(Vector3.RIGHT, -PI / 2.0).scaled(Vector3(s, s, s)), Vector3(p.x, 0.03, p.z))
+			var t := Transform3D(Basis(Vector3.RIGHT, -PI / 2.0).scaled(Vector3(s, s, s)), Vector3(p.x, ground_y(p) + 0.03, p.z))
 			blob_mm.set_instance_transform(i, t)
 			i += 1
 	while i < MAX_BLOBS and i < blob_users.size():
@@ -227,11 +241,54 @@ func decal(pos: Vector3, size: float = 1.0) -> void:
 	decal_index = (decal_index + 1) % Game.MAX_DECALS
 	var s := clampf(size, 0.3, 3.0)
 	var rot := Basis(Vector3.RIGHT, -PI / 2.0).rotated(Vector3.UP, Game.randf_range(0.0, TAU))
-	var t := Transform3D(rot * Basis().scaled(Vector3(s * Game.randf_range(0.8, 1.25), s * Game.randf_range(0.8, 1.25), 1.0)), Vector3(pos.x, 0.015 + (i % 7) * 0.002, pos.z))
+	var t := Transform3D(rot * Basis().scaled(Vector3(s * Game.randf_range(0.8, 1.25), s * Game.randf_range(0.8, 1.25), 1.0)), Vector3(pos.x, ground_y(pos) + 0.015 + (i % 7) * 0.002, pos.z))
 	decal_mm.set_instance_transform(i, t)
 	var c := MeshLib.BLOOD_DARK
 	c.r += Game.randf_range(-0.08, 0.1)
 	decal_mm.set_instance_color(i, c)
+
+## A blood pool that slowly spreads under a body.
+func pool(pos: Vector3) -> void:
+	var i := decal_index
+	decal(pos, 0.4)
+	pools.append({"i": i, "pos": Vector3(pos.x, 0.0, pos.z), "size": 0.4, "max": Game.randf_range(1.8, 2.8), "rot": Game.randf_range(0.0, TAU)})
+	if pools.size() > 12:
+		pools.pop_front()
+
+func _grow_pools(delta: float) -> void:
+	for p in pools:
+		if p["size"] >= p["max"]:
+			continue
+		p["size"] = minf(p["max"], p["size"] + delta * 0.25)
+		var s: float = p["size"]
+		var pos: Vector3 = p["pos"]
+		var rot := Basis(Vector3.RIGHT, -PI / 2.0).rotated(Vector3.UP, p["rot"])
+		decal_mm.set_instance_transform(p["i"], Transform3D(rot * Basis().scaled(Vector3(s, s, 1.0)), Vector3(pos.x, ground_y(pos) + 0.012, pos.z)))
+
+## Ground height under a point (sidewalks are raised).
+func ground_y(pos: Vector3) -> float:
+	if Game.city and Game.city.has_method("ground_height"):
+		return Game.city.ground_height(pos)
+	return 0.0
+
+var _flash_pool: Array[MeshInstance3D] = []
+var _flash_i := 0
+
+## Brief muzzle flash at a point (used by police guns).
+func muzzle_flash(pos: Vector3) -> void:
+	if _flash_pool.is_empty():
+		for k in 4:
+			var mi := MeshInstance3D.new()
+			mi.mesh = MeshLib.sphere(0.07, 6, 4)
+			mi.material_override = MeshLib.mat(Color(1, 0.9, 0.5), 1.0, 0.0, Color(1.0, 0.75, 0.3), 5.0)
+			mi.visible = false
+			add_child(mi)
+			_flash_pool.append(mi)
+	var f := _flash_pool[_flash_i]
+	_flash_i = (_flash_i + 1) % _flash_pool.size()
+	f.global_position = pos
+	f.visible = true
+	get_tree().create_timer(0.05).timeout.connect(func(): f.visible = false)
 
 ## Bullet tracer from a to b, hidden after a few frames.
 func tracer(a: Vector3, b: Vector3) -> void:

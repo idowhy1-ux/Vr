@@ -68,17 +68,133 @@ func _ready() -> void:
 	last_pos = global_position
 	last_basis = global_transform.basis
 
+# ---------------------------------------------------------------- hand model
+# Skinned hand: bone 0 = palm, then 3 bones per finger (index, middle, ring,
+# pinky) and 3 for the thumb. The palm faces the other hand (-X for the right
+# hand), knuckles point forward (-Z), fingers curl towards the palm.
+var hand_skel: Skeleton3D
+var curl_index := 0.0
+var curl_grip := 0.0
+var curl_thumb := 0.0
+const FINGERS := [
+	# base (x, y, z), segment lengths, radius
+	[Vector3(0.0, 0.03, -0.035), [0.044, 0.026, 0.022], 0.0095],
+	[Vector3(0.0, 0.009, -0.038), [0.048, 0.03, 0.024], 0.0098],
+	[Vector3(0.0, -0.012, -0.035), [0.044, 0.028, 0.022], 0.0092],
+	[Vector3(0.0, -0.031, -0.028), [0.036, 0.022, 0.019], 0.0082],
+]
+static var _hand_cache: Dictionary = {}
+
+static func _hand_rest(side_s: float) -> Array:
+	# returns [bone_global_rest_positions, parent indices]
+	var pos: Array[Vector3] = [Vector3.ZERO]
+	var parent: Array[int] = [-1]
+	for f in FINGERS:
+		var b: Vector3 = f[0]
+		b.x *= side_s
+		var seg: Array = f[1]
+		var z := b.z
+		for k in 3:
+			pos.append(Vector3(b.x, b.y, z))
+			parent.append(0 if k == 0 else pos.size() - 2)
+			z -= seg[k]
+	var tb := Vector3(-0.022 * side_s, 0.032, 0.022)
+	var dirs := [Vector3(-0.012 * side_s, 0.006, -0.034), Vector3(-0.004 * side_s, 0.004, -0.03), Vector3(0.0, 0.002, -0.024)]
+	var tp := tb
+	for k in 3:
+		pos.append(tp)
+		parent.append(0 if k == 0 else pos.size() - 2)
+		tp += dirs[k]
+	return [pos, parent]
+
+static func _hand_geo(side_s: float) -> Dictionary:
+	var key := side_s
+	if _hand_cache.has(key):
+		return _hand_cache[key]
+	var g := Geo.new()
+	var skin := Color(0.86, 0.68, 0.55)
+	var sleeve := Color(0.1, 0.1, 0.11)
+	var rest := _hand_rest(side_s)
+	var pos: Array[Vector3] = rest[0]
+	g.bone = 0
+	g.mat(skin, 0.55).rbox(Vector3(-0.002 * side_s, 0.0, 0.0), Vector3(0.03, 0.082, 0.085), 0.016, 2)
+	g.mat(skin, 0.55).capsule(Vector3(0, -0.002, 0.04), Vector3(0, -0.002, 0.07), 0.026, 0.024, 10, 1)
+	g.mat(sleeve, 0.85).capsule(Vector3(0, -0.002, 0.075), Vector3(0, -0.004, 0.17), 0.038, 0.042, 12, 2)
+	var bi := 1
+	for f in FINGERS:
+		var seg: Array = f[1]
+		var r: float = f[2]
+		for k in 3:
+			g.bone = bi
+			var a: Vector3 = pos[bi]
+			var b := a + Vector3(0, 0, -seg[k])
+			g.mat(skin, 0.55).capsule(a, b, r * (1.0 - k * 0.08), r * (0.95 - k * 0.1), 8, 2)
+			bi += 1
+	for k in 3:
+		g.bone = bi
+		var a: Vector3 = pos[bi]
+		var b: Vector3 = pos[bi + 1] if k < 2 else a + Vector3(0.0, 0.002, -0.024)
+		g.mat(skin, 0.55).capsule(a, b, 0.012 - k * 0.0012, 0.0105 - k * 0.0012, 8, 2)
+		bi += 1
+	var mesh := g.mesh({}, true)
+	var sk := Skin.new()
+	for b in pos.size():
+		sk.add_bind(b, Transform3D(Basis(), -pos[b]))
+	var res := {"mesh": mesh, "skin": sk, "pos": pos, "parent": rest[1]}
+	_hand_cache[key] = res
+	return res
+
 func _build_hand() -> void:
+	var side_s := 1.0 if side == "right" else -1.0
+	var hg := _hand_geo(side_s)
 	hand_mesh = Node3D.new()
+	hand_mesh.rotation_degrees = Vector3(-25, 0, 0)
+	hand_mesh.position = Vector3(0, -0.035, 0.065)
 	add_child(hand_mesh)
-	var skin := Color(0.9, 0.72, 0.6)
-	var r := side == "right"
-	var mesh := MeshLib.build([
-		MeshLib.part(MeshLib.box(Vector3(0.08, 0.035, 0.09)), Vector3(0, -0.02, -0.02), Vector3(-20, 0, 0), skin, 0.75),
-		MeshLib.part(MeshLib.box(Vector3(0.08, 0.05, 0.05)), Vector3(0, -0.01, -0.085), Vector3(-30, 0, 0), skin, 0.75),
-		MeshLib.part(MeshLib.capsule(0.013, 0.06, 5, 2), Vector3(-0.045 if r else 0.045, 0.0, -0.04), Vector3(70, 0, 35 if r else -35), skin, 0.75),
-		MeshLib.part(MeshLib.capsule(0.045, 0.14, 7, 2), Vector3(0, -0.01, 0.09), Vector3(85, 0, 0), Color(0.15, 0.15, 0.17), 0.9)])
-	MeshLib.inst_built(mesh, Vector3.ZERO, Vector3.ZERO, hand_mesh)
+	hand_skel = Skeleton3D.new()
+	var pos: Array[Vector3] = hg["pos"]
+	var parent: Array[int] = hg["parent"]
+	for b in pos.size():
+		hand_skel.add_bone("b%d" % b)
+	for b in pos.size():
+		hand_skel.set_bone_parent(b, parent[b])
+		var pp: Vector3 = pos[parent[b]] if parent[b] >= 0 else Vector3.ZERO
+		hand_skel.set_bone_rest(b, Transform3D(Basis(), pos[b] - pp))
+	hand_skel.reset_bone_poses()
+	hand_mesh.add_child(hand_skel)
+	var mi := MeshInstance3D.new()
+	mi.mesh = hg["mesh"]
+	mi.skin = hg["skin"]
+	mi.material_override = MeshLib.atlas()
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	hand_skel.add_child(mi)
+	mi.skeleton = mi.get_path_to(hand_skel)
+
+## Curl the fingers from the controller (index = trigger, others = grip).
+func _pose_fingers(delta: float) -> void:
+	var holding := held != null
+	var t_index := trig() if not (held is Weapon and not (held as Weapon).is_gun()) else 1.0
+	var t_grip := 1.0 if (grip() or holding) else (0.15 if tk_target else 0.0)
+	if tk_target != null:
+		t_index = 0.2
+		t_grip = 0.25
+	if held is Weapon and (held as Weapon).is_gun():
+		t_index = 0.35 + trig() * 0.5
+	curl_index = lerpf(curl_index, t_index, 18.0 * delta)
+	curl_grip = lerpf(curl_grip, t_grip, 18.0 * delta)
+	curl_thumb = lerpf(curl_thumb, maxf(t_grip, t_index * 0.5), 18.0 * delta)
+	var side_s := 1.0 if side == "right" else -1.0
+	var b := 1
+	for f in 4:
+		var c := curl_index if f == 0 else curl_grip
+		for k in 3:
+			var ang: float = c * [1.35, 1.6, 1.0][k] + 0.08
+			hand_skel.set_bone_pose_rotation(b, Quaternion(Vector3.UP, ang * side_s))
+			b += 1
+	for k in 3:
+		var ang: float = curl_thumb * [0.5, 0.7, 0.6][k]
+		hand_skel.set_bone_pose_rotation(b, Quaternion(Vector3(0.3, 1.0, 0.0).normalized(), ang * side_s))
+		b += 1
 
 func haptic(amplitude: float, duration: float) -> void:
 	if not Game.desktop_mode:
@@ -175,8 +291,7 @@ func _physics_process(delta: float) -> void:
 	# --- punching
 	if held == null and tk_target == null and velocity.length() > 2.6 and punch_cd <= 0.0:
 		_try_punch()
-	# fist visual: close fist when gripping
-	hand_mesh.scale = Vector3(1, 1, 0.85) if g else Vector3.ONE
+	_pose_fingers(delta)
 
 # ---------------------------------------------------------------- punching
 func _try_punch() -> void:
@@ -229,7 +344,7 @@ func grab_body(body: Node) -> void:
 			return
 		ped.go_ragdoll(Vector3.ZERO)
 		if ped.ragdoll and is_instance_valid(ped.ragdoll):
-			_hold_rigid(ped.ragdoll.torso())
+			_hold_rigid(ped.ragdoll.nearest_body(global_position))
 	elif body is Car:
 		var car := body as Car
 		if car.mode == Car.Mode.PLAYER:
@@ -247,7 +362,6 @@ func _grab_weapon(w: Weapon) -> void:
 			(other as Hand).release(false)
 	held = w
 	w.on_grab(self)
-	hand_mesh.visible = false
 	haptic(0.4, 0.05)
 
 func _hold_rigid(rb: RigidBody3D) -> void:
@@ -288,7 +402,6 @@ func release(throw: bool = true) -> void:
 	if held is Weapon:
 		var w := held as Weapon
 		w.on_release(velocity * 1.2, ang_velocity)
-		hand_mesh.visible = true
 	elif held is RigidBody3D:
 		var rb := held as RigidBody3D
 		if is_instance_valid(rb):
@@ -320,7 +433,7 @@ func tk_try_grab() -> void:
 			return
 		ped.go_ragdoll(Vector3(0, 40, 0))
 		if ped.ragdoll and is_instance_valid(ped.ragdoll):
-			rb = ped.ragdoll.torso()
+			rb = ped.ragdoll.nearest_body(r["position"])
 	elif col is Car:
 		var car := col as Car
 		if car.mode == Car.Mode.PLAYER:

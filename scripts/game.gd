@@ -40,6 +40,7 @@ var desktop_mode := false
 var base_physics_rate := 90
 var autotest := false
 var screenshot := false
+var shadows := true
 
 # ---- Wanted level ----
 var wanted := 0.0

@@ -145,6 +145,12 @@ static func sphere_shape(r: float) -> SphereShape3D:
 	s.radius = r
 	return s
 
+static func cylinder_shape(r: float, h: float) -> CylinderShape3D:
+	var s := CylinderShape3D.new()
+	s.radius = r
+	s.height = h
+	return s
+
 static func capsule_shape(r: float, h: float) -> CapsuleShape3D:
 	var s := CapsuleShape3D.new()
 	s.radius = r

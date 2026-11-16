@@ -55,61 +55,149 @@ func _ready() -> void:
 
 static var _mesh_cache: Dictionary = {}
 
+const WOOD := Color(0.55, 0.36, 0.18)
+const DARK_WOOD := Color(0.32, 0.18, 0.09)
+const STEEL := Color(0.8, 0.81, 0.84)
+const GUNMETAL := Color(0.13, 0.13, 0.14)
+const POLYMER := Color(0.09, 0.09, 0.1)
+const RUBBER := Color(0.05, 0.05, 0.05)
+
+## Smooth visual mesh for a weapon type (grip at the origin, pointing -Z).
+static func visual_mesh(t: String) -> ArrayMesh:
+	if _mesh_cache.has(t):
+		return _mesh_cache[t]
+	var g := Geo.new()
+	var to_fwd := Transform3D(Basis(Vector3.RIGHT, -PI / 2.0))   # lathe Y axis -> -Z
+	match t:
+		"bat":
+			g.xf = to_fwd
+			g.mat(RUBBER, 0.9).lathe([Vector2(0.0, 0.075), Vector2(0.024, 0.074), Vector2(0.027, 0.066), Vector2(0.017, 0.056), Vector2(0.0145, 0.03), Vector2(0.0145, -0.17)], 12, true, false)
+			g.mat(WOOD, 0.55).lathe([Vector2(0.0145, -0.17), Vector2(0.015, -0.24), Vector2(0.02, -0.37), Vector2(0.029, -0.52), Vector2(0.0335, -0.66), Vector2(0.034, -0.74), Vector2(0.03, -0.765), Vector2(0.0, -0.775)], 14, false, true)
+		"baton":
+			g.xf = to_fwd
+			g.mat(RUBBER, 0.7).lathe([Vector2(0.0, 0.07), Vector2(0.019, 0.068), Vector2(0.019, -0.09), Vector2(0.0, -0.092)], 10)
+			g.mat(POLYMER, 0.35, 0.2).lathe([Vector2(0.0, -0.09), Vector2(0.015, -0.09), Vector2(0.014, -0.5), Vector2(0.016, -0.52), Vector2(0.0, -0.53)], 10)
+			g.xf = Transform3D.IDENTITY
+			g.mat(POLYMER, 0.4).capsule(Vector3(0, 0, -0.07), Vector3(0, -0.13, -0.07), 0.012, 0.012, 8, 2)
+		"knife":
+			g.mat(POLYMER, 0.6).rbox(Vector3(0, -0.005, -0.04), Vector3(0.024, 0.03, 0.12), 0.01, 2)
+			g.mat(STEEL, 0.3, 1.0).rbox(Vector3(0, 0.0, -0.105), Vector3(0.03, 0.045, 0.012), 0.004, 1)
+			_blade(g, -0.11, 0.2, 0.034, 0.0035, 0.0)
+		"machete":
+			g.mat(DARK_WOOD, 0.6).rbox(Vector3(0, -0.005, -0.06), Vector3(0.026, 0.034, 0.14), 0.011, 2)
+			g.mat(STEEL, 0.3, 1.0).rbox(Vector3(0, -0.0, -0.13), Vector3(0.022, 0.05, 0.012), 0.004, 1)
+			_blade(g, -0.135, 0.48, 0.055, 0.003, 0.02)
+		"axe":
+			var curve := []
+			for i in 8:
+				var tt := float(i) / 7.0
+				curve.append(Geo.ring_axis(Vector3(0, 0.012 * sin(tt * PI), -0.03 - tt * 0.68), Vector3.FORWARD, 0.016 + 0.004 * sin(tt * PI * 0.5), 0.02 + 0.004 * sin(tt * PI * 0.5), 10))
+			g.mat(WOOD, 0.6).loft(curve, true, true)
+			# axe head: wedge lofted along +Y (blade edge thin)
+			var head := []
+			for k in 5:
+				var y := -0.03 + k * 0.045
+				var th := lerpf(0.022, 0.003, clampf(float(k - 1) / 3.0, 0.0, 1.0))
+				var ln := lerpf(0.06, 0.13, float(k) / 4.0)
+				head.append(Geo.ring(y, th, ln * 0.5, ln * 0.5, 10, 4.0, Vector2(0, -0.69)))
+			g.mat(GUNMETAL, 0.4, 0.9).loft(head, true, true)
+			g.mat(STEEL, 0.18, 1.0).rbox(Vector3(0, 0.152, -0.69), Vector3(0.004, 0.012, 0.13), 0.002, 1)
+		"pistol":
+			g.mat(GUNMETAL, 0.35, 0.8).rbox(Vector3(0, 0.032, -0.085), Vector3(0.029, 0.033, 0.19), 0.006, 2)
+			g.mat(POLYMER, 0.55).rbox(Vector3(0, 0.006, -0.075), Vector3(0.027, 0.022, 0.16), 0.006, 2)
+			g.xf = Transform3D(Basis(Vector3.RIGHT, deg_to_rad(16)), Vector3(0, -0.03, 0.0))
+			g.mat(POLYMER, 0.75).rbox(Vector3.ZERO, Vector3(0.029, 0.105, 0.046), 0.01, 2)
+			g.xf = Transform3D.IDENTITY
+			g.mat(POLYMER, 0.5).capsule(Vector3(0, -0.012, -0.03), Vector3(0, -0.012, -0.075), 0.004, 0.004, 6, 1)
+			g.mat(POLYMER, 0.5).capsule(Vector3(0, -0.012, -0.075), Vector3(0, 0.0, -0.08), 0.004, 0.004, 6, 1)
+			g.mat(GUNMETAL, 0.4, 0.8).rbox(Vector3(0, -0.006, -0.052), Vector3(0.006, 0.018, 0.006), 0.002, 1)
+			g.mat(RUBBER, 0.3).rbox(Vector3(0, 0.051, -0.172), Vector3(0.006, 0.008, 0.006), 0.001, 1)
+			g.mat(RUBBER, 0.3).rbox(Vector3(0, 0.051, 0.0), Vector3(0.016, 0.008, 0.006), 0.001, 1)
+			g.xf = to_fwd
+			g.mat(RUBBER, 0.3).lathe([Vector2(0.0072, 0.17), Vector2(0.0072, 0.181), Vector2(0.0, 0.181)], 10, false, true)
+		"shotgun":
+			g.xf = Transform3D(Basis(Vector3.RIGHT, -PI / 2.0), Vector3(0, 0.04, 0))
+			g.mat(GUNMETAL, 0.3, 0.85).lathe([Vector2(0.0, 0.0), Vector2(0.0125, 0.0), Vector2(0.0125, 0.72), Vector2(0.0, 0.72)], 12)
+			g.xf = Transform3D(Basis(Vector3.RIGHT, -PI / 2.0), Vector3(0, 0.014, 0))
+			g.mat(GUNMETAL, 0.4, 0.7).lathe([Vector2(0.0, 0.1), Vector2(0.011, 0.1), Vector2(0.011, 0.66), Vector2(0.0, 0.66)], 10)
+			g.xf = Transform3D.IDENTITY
+			g.mat(DARK_WOOD, 0.55).rbox(Vector3(0, 0.018, -0.36), Vector3(0.042, 0.04, 0.2), 0.016, 2)
+			g.mat(GUNMETAL, 0.35, 0.8).rbox(Vector3(0, 0.03, -0.03), Vector3(0.04, 0.06, 0.24), 0.008, 2)
+			g.mat(GUNMETAL, 0.35, 0.8).capsule(Vector3(0, -0.005, 0.0), Vector3(0, -0.005, -0.05), 0.004, 0.004, 6, 1)
+			g.xf = Transform3D(Basis(Vector3.RIGHT, deg_to_rad(-12)), Vector3(0, 0.0, 0.22))
+			var stock := []
+			for k in 6:
+				var z := -0.2 + k * 0.074
+				var h := lerpf(0.045, 0.072, float(k) / 5.0)
+				stock.append(Geo.ring_axis(Vector3(0, -0.012 - h * 0.3, z), Vector3.BACK, 0.019, h, 10))
+			g.mat(DARK_WOOD, 0.5).loft(stock, true, true)
+			g.xf = Transform3D.IDENTITY
+			g.mat(RUBBER, 0.8).rbox(Vector3(0, -0.04, 0.395), Vector3(0.04, 0.14, 0.02), 0.008, 1)
+		"smg":
+			g.mat(POLYMER, 0.45, 0.2).rbox(Vector3(0, 0.03, -0.12), Vector3(0.045, 0.06, 0.3), 0.01, 2)
+			g.mat(GUNMETAL, 0.35, 0.8).rbox(Vector3(0, 0.067, -0.12), Vector3(0.022, 0.015, 0.24), 0.004, 1)
+			g.xf = Transform3D(Basis(Vector3.RIGHT, -PI / 2.0), Vector3(0, 0.035, -0.27))
+			g.mat(GUNMETAL, 0.4, 0.8).lathe([Vector2(0.0, 0.0), Vector2(0.016, 0.0), Vector2(0.016, 0.1), Vector2(0.009, 0.1), Vector2(0.009, 0.19), Vector2(0.0, 0.19)], 10)
+			g.xf = Transform3D(Basis(Vector3.RIGHT, deg_to_rad(12)), Vector3(0, -0.035, 0.0))
+			g.mat(POLYMER, 0.75).rbox(Vector3.ZERO, Vector3(0.03, 0.1, 0.042), 0.01, 2)
+			g.xf = Transform3D(Basis(Vector3.RIGHT, deg_to_rad(6)), Vector3(0, -0.06, -0.14))
+			g.mat(GUNMETAL, 0.5, 0.6).rbox(Vector3.ZERO, Vector3(0.026, 0.15, 0.034), 0.006, 1)
+			g.xf = Transform3D.IDENTITY
+			g.mat(POLYMER, 0.6).rbox(Vector3(0, -0.02, -0.235), Vector3(0.026, 0.07, 0.03), 0.01, 1)
+			g.mat(GUNMETAL, 0.4, 0.8).capsule(Vector3(0, 0.03, 0.03), Vector3(0, 0.03, 0.2), 0.007, 0.007, 6, 1)
+			g.mat(GUNMETAL, 0.4, 0.8).capsule(Vector3(0, -0.02, 0.06), Vector3(0, -0.02, 0.2), 0.006, 0.006, 6, 1)
+			g.mat(RUBBER, 0.8).rbox(Vector3(0, 0.005, 0.205), Vector3(0.03, 0.08, 0.016), 0.006, 1)
+	var m := g.mesh()
+	_mesh_cache[t] = m
+	return m
+
+## Flat tapered blade lofted forward from z0, with a sharpened edge on the
+## bottom and an optional upward curve near the tip.
+static func _blade(g: Geo, z0: float, length: float, height: float, thick: float, curve: float) -> void:
+	var rings := []
+	var n := 7
+	for k in n + 1:
+		var tt := float(k) / n
+		var z := z0 - tt * length
+		var h := height * (1.0 - pow(tt, 3.0) * 0.85) if k < n else 0.004
+		var yc := curve * tt * tt + (height * 0.5 * pow(tt, 2.5) if curve == 0.0 else 0.0)
+		var ring := PackedVector3Array()
+		# diamond-ish cross-section: thick spine on top, sharp edge at the bottom
+		ring.append(Vector3(0, yc + h * 0.5, z))
+		ring.append(Vector3(thick * 0.5, yc + h * 0.38, z))
+		ring.append(Vector3(thick * 0.35, yc - h * 0.1, z))
+		ring.append(Vector3(0, yc - h * 0.5, z))
+		ring.append(Vector3(-thick * 0.35, yc - h * 0.1, z))
+		ring.append(Vector3(-thick * 0.5, yc + h * 0.38, z))
+		rings.append(ring)
+	g.mat(STEEL, 0.22, 1.0).loft(rings, true, true)
+
 func _build() -> void:
-	var WOOD := Color(0.6, 0.42, 0.22)
-	var STEEL := Color(0.78, 0.79, 0.83)
-	var GUN := Color(0.12, 0.12, 0.13)
-	var GRIP := Color(0.2, 0.15, 0.1)
-	var BLACK := Color(0.05, 0.05, 0.05)
-	var P: Array = []
 	match type:
 		"bat":
-			P.append(MeshLib.part(MeshLib.taper(0.042, 0.02, 0.7, 8), Vector3(0, 0, -0.45), Vector3(-90, 0, 0), WOOD, 0.6))
-			P.append(MeshLib.part(MeshLib.cylinder(0.02, 0.22, 7), Vector3(0, 0, -0.05), Vector3(90, 0, 0), BLACK, 0.8))
-			MeshLib.collider(MeshLib.box_shape(Vector3(0.08, 0.08, 0.85)), Vector3(0, 0, -0.4), Vector3.ZERO, self)
+			MeshLib.collider(MeshLib.box_shape(Vector3(0.07, 0.07, 0.85)), Vector3(0, 0, -0.35), Vector3.ZERO, self)
 		"baton":
-			P.append(MeshLib.part(MeshLib.cylinder(0.018, 0.5, 6), Vector3(0, 0, -0.3), Vector3(90, 0, 0), BLACK, 0.5))
-			P.append(MeshLib.part(MeshLib.cylinder(0.024, 0.14, 6), Vector3(0, 0, -0.03), Vector3(90, 0, 0), GRIP, 0.8))
-			MeshLib.collider(MeshLib.box_shape(Vector3(0.06, 0.06, 0.55)), Vector3(0, 0, -0.25), Vector3.ZERO, self)
+			MeshLib.collider(MeshLib.box_shape(Vector3(0.05, 0.05, 0.6)), Vector3(0, 0, -0.23), Vector3.ZERO, self)
 		"machete":
-			P.append(MeshLib.part(MeshLib.box(Vector3(0.006, 0.07, 0.5)), Vector3(0, 0.0, -0.4), Vector3.ZERO, STEEL, 0.2, 0.9))
-			P.append(MeshLib.part(MeshLib.box(Vector3(0.008, 0.02, 0.5)), Vector3(0, 0.03, -0.4), Vector3.ZERO, STEEL.darkened(0.3), 0.3, 0.9))
-			P.append(MeshLib.part(MeshLib.box(Vector3(0.03, 0.04, 0.16)), Vector3(0, 0, -0.06), Vector3.ZERO, GRIP, 0.8))
-			MeshLib.collider(MeshLib.box_shape(Vector3(0.05, 0.08, 0.62)), Vector3(0, 0, -0.3), Vector3.ZERO, self)
+			MeshLib.collider(MeshLib.box_shape(Vector3(0.04, 0.07, 0.66)), Vector3(0, 0, -0.3), Vector3.ZERO, self)
 		"knife":
-			P.append(MeshLib.part(MeshLib.box(Vector3(0.005, 0.035, 0.24)), Vector3(0, 0, -0.24), Vector3.ZERO, STEEL, 0.2, 0.9))
-			P.append(MeshLib.part(MeshLib.box(Vector3(0.04, 0.05, 0.015)), Vector3(0, 0, -0.12), Vector3.ZERO, BLACK, 0.4, 0.6))
-			P.append(MeshLib.part(MeshLib.box(Vector3(0.026, 0.03, 0.12)), Vector3(0, 0, -0.06), Vector3.ZERO, GRIP, 0.8))
-			MeshLib.collider(MeshLib.box_shape(Vector3(0.04, 0.05, 0.36)), Vector3(0, 0, -0.18), Vector3.ZERO, self)
+			MeshLib.collider(MeshLib.box_shape(Vector3(0.035, 0.05, 0.33)), Vector3(0, 0, -0.14), Vector3.ZERO, self)
 		"axe":
-			P.append(MeshLib.part(MeshLib.cylinder(0.022, 0.7, 7), Vector3(0, 0, -0.38), Vector3(90, 0, 0), WOOD, 0.7))
-			P.append(MeshLib.part(MeshLib.box(Vector3(0.025, 0.2, 0.16)), Vector3(0, 0.1, -0.66), Vector3.ZERO, STEEL, 0.25, 0.9))
-			P.append(MeshLib.part(MeshLib.box(Vector3(0.012, 0.22, 0.03)), Vector3(0, 0.1, -0.74), Vector3.ZERO, Color(0.9, 0.9, 0.95), 0.15, 1.0))
-			MeshLib.collider(MeshLib.box_shape(Vector3(0.06, 0.22, 0.76)), Vector3(0, 0.05, -0.38), Vector3.ZERO, self)
+			MeshLib.collider(MeshLib.box_shape(Vector3(0.05, 0.2, 0.78)), Vector3(0, 0.05, -0.36), Vector3.ZERO, self)
 		"pistol":
-			P.append(MeshLib.part(MeshLib.box(Vector3(0.034, 0.05, 0.19)), Vector3(0, 0.03, -0.1), Vector3.ZERO, GUN, 0.45, 0.7))
-			P.append(MeshLib.part(MeshLib.box(Vector3(0.03, 0.11, 0.04)), Vector3(0, -0.04, 0.0), Vector3(15, 0, 0), GRIP, 0.8))
-			P.append(MeshLib.part(MeshLib.box(Vector3(0.01, 0.025, 0.02)), Vector3(0, -0.005, -0.07), Vector3.ZERO, BLACK, 0.6))
-			MeshLib.collider(MeshLib.box_shape(Vector3(0.05, 0.16, 0.2)), Vector3(0, 0, -0.08), Vector3.ZERO, self)
-			_muzzle(Vector3(0, 0.035, -0.2))
+			MeshLib.collider(MeshLib.box_shape(Vector3(0.04, 0.14, 0.2)), Vector3(0, 0, -0.07), Vector3.ZERO, self)
+			_muzzle(Vector3(0, 0.032, -0.19))
 		"shotgun":
-			P.append(MeshLib.part(MeshLib.cylinder(0.018, 0.62, 7), Vector3(0, 0.04, -0.4), Vector3(90, 0, 0), GUN, 0.4, 0.7))
-			P.append(MeshLib.part(MeshLib.cylinder(0.022, 0.4, 7), Vector3(0, 0.0, -0.32), Vector3(90, 0, 0), WOOD, 0.7))
-			P.append(MeshLib.part(MeshLib.box(Vector3(0.04, 0.07, 0.22)), Vector3(0, 0.02, -0.05), Vector3.ZERO, GUN, 0.45, 0.7))
-			P.append(MeshLib.part(MeshLib.box(Vector3(0.04, 0.11, 0.3)), Vector3(0, -0.03, 0.2), Vector3(-10, 0, 0), WOOD, 0.7))
-			MeshLib.collider(MeshLib.box_shape(Vector3(0.06, 0.14, 0.95)), Vector3(0, 0, -0.25), Vector3.ZERO, self)
-			_muzzle(Vector3(0, 0.04, -0.72))
+			MeshLib.collider(MeshLib.box_shape(Vector3(0.05, 0.12, 1.1)), Vector3(0, 0.01, -0.2), Vector3.ZERO, self)
+			_muzzle(Vector3(0, 0.04, -0.73))
 		"smg":
-			P.append(MeshLib.part(MeshLib.box(Vector3(0.05, 0.08, 0.36)), Vector3(0, 0.03, -0.14), Vector3.ZERO, GUN, 0.45, 0.7))
-			P.append(MeshLib.part(MeshLib.cylinder(0.014, 0.14, 6), Vector3(0, 0.04, -0.38), Vector3(90, 0, 0), GUN, 0.4, 0.7))
-			P.append(MeshLib.part(MeshLib.box(Vector3(0.03, 0.12, 0.04)), Vector3(0, -0.05, 0.0), Vector3(10, 0, 0), GRIP, 0.8))
-			P.append(MeshLib.part(MeshLib.box(Vector3(0.03, 0.16, 0.035)), Vector3(0, -0.06, -0.14), Vector3.ZERO, BLACK, 0.6))
-			P.append(MeshLib.part(MeshLib.box(Vector3(0.03, 0.05, 0.2)), Vector3(0, 0.0, 0.16), Vector3.ZERO, GUN, 0.45, 0.7))
-			MeshLib.collider(MeshLib.box_shape(Vector3(0.07, 0.2, 0.5)), Vector3(0, -0.02, -0.1), Vector3.ZERO, self)
-			_muzzle(Vector3(0, 0.04, -0.46))
-	if not _mesh_cache.has(type):
-		_mesh_cache[type] = MeshLib.build(P)
-	MeshLib.inst_built(_mesh_cache[type], Vector3.ZERO, Vector3.ZERO, visual, 60.0)
+			MeshLib.collider(MeshLib.box_shape(Vector3(0.05, 0.2, 0.55)), Vector3(0, 0, -0.08), Vector3.ZERO, self)
+			_muzzle(Vector3(0, 0.035, -0.47))
+	var mi := MeshInstance3D.new()
+	mi.mesh = visual_mesh(type)
+	mi.material_override = MeshLib.atlas()
+	mi.visibility_range_end = 60.0
+	visual.add_child(mi)
 
 func _muzzle(pos: Vector3) -> void:
 	muzzle = Node3D.new()
@@ -132,7 +220,7 @@ func on_grab(hand: Node3D) -> void:
 	collision_mask = 0
 	hit_cd.clear()
 	reparent(hand, false)
-	transform = Transform3D(Basis(), Vector3(0, -0.01, -0.03))
+	transform = Transform3D(Basis(), Vector3(0, -0.03, 0.015))
 	if blade:
 		blade.monitoring = true
 	Game.sfx.play("pickup", global_position, -8.0)
