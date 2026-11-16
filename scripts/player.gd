@@ -67,8 +67,7 @@ func _ready() -> void:
 	camera.add_child(fade)
 	if Game.desktop_mode:
 		camera.position = Vector3(0, 1.7, 0)
-		left.position = Vector3(-0.25, 1.35, -0.4)
-		right.position = Vector3(0.25, 1.35, -0.4)
+		_place_desktop_hands()
 	last_pos = global_position
 
 func _fade_mat(alpha: float) -> StandardMaterial3D:
@@ -356,10 +355,15 @@ func _desktop_update() -> void:
 	camera.position = Vector3(0, 1.7, 0)
 	camera.rotation = Vector3(desk_pitch, 0, 0)
 	origin.rotation.y = desk_yaw
-	left.position = Vector3(-0.25, 1.35, -0.4).rotated(Vector3.RIGHT, desk_pitch)
-	right.position = Vector3(0.25, 1.35, -0.4).rotated(Vector3.RIGHT, desk_pitch)
-	left.rotation = Vector3(desk_pitch, 0, 0)
-	right.rotation = Vector3(desk_pitch, 0, 0)
+	_place_desktop_hands()
+
+## Without a headset: hold both hands in front of the camera, aimed forward.
+func _place_desktop_hands() -> void:
+	var inv := Hand.grip_to_aim().affine_inverse()
+	for h in [left, right]:
+		var x := -0.22 if h == left else 0.22
+		var aim := Transform3D(Basis(Vector3.RIGHT, desk_pitch), Vector3(x, 1.4, -0.38).rotated(Vector3.RIGHT, desk_pitch))
+		(h as Node3D).transform = aim * inv
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not Game.desktop_mode:

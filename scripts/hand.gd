@@ -35,14 +35,14 @@ var sim_stick := Vector2.ZERO
 
 func _ready() -> void:
 	tracker = "left_hand" if side == "left" else "right_hand"
-	pose = "aim"
+	pose = "grip"
 	_build_hand()
 	grab_area = Area3D.new()
 	grab_area.collision_layer = 0
 	grab_area.collision_mask = Game.mask([Game.L_NPC, Game.L_RAGDOLL, Game.L_PROP, Game.L_CAR])
 	grab_area.monitoring = true
 	grab_area.monitorable = false
-	MeshLib.collider(MeshLib.sphere_shape(0.1), Vector3(0, -0.02, -0.04), Vector3.ZERO, grab_area)
+	MeshLib.collider(MeshLib.sphere_shape(0.09), Vector3(0.015 * (1.0 if side == "right" else -1.0), -0.045, 0.0), Vector3.ZERO, grab_area)
 	add_child(grab_area)
 	# telekinesis visuals
 	tk_beam = MeshInstance3D.new()
@@ -69,73 +69,149 @@ func _ready() -> void:
 	last_basis = global_transform.basis
 
 # ---------------------------------------------------------------- hand model
-# Skinned hand: bone 0 = palm, then 3 bones per finger (index, middle, ring,
-# pinky) and 3 for the thumb. The palm faces the other hand (-X for the right
-# hand), knuckles point forward (-Z), fingers curl towards the palm.
+# The node follows the controller's OpenXR *grip* pose: origin in the middle of
+# the controller handle (where your palm closes), -Z running from pinky to
+# thumb along the handle, -Y pointing out of the knuckles, palm facing +X on
+# the left hand and -X on the right. The hand model is built in its own frame
+# (palm facing -X for the right hand, fingers along -Z, index on +Y, wrist +Z)
+# and rotated into grip space, so it wraps around the real controller.
+#
+# Skinned hand: bone 0 = palm, 1-12 = index/middle/ring/pinky (3 bones each),
+# 13-15 = thumb (metacarpal, proximal, distal). Fingers follow the Touch
+# controller: index = trigger (+ capacitive touch), the other three = grip,
+# thumb = touching the stick or buttons.
+
 var hand_skel: Skeleton3D
-var curl_index := 0.0
-var curl_grip := 0.0
-var curl_thumb := 0.0
+var curls := PackedFloat32Array([0.15, 0.15, 0.15, 0.15, 0.2])   # index, middle, ring, pinky, thumb
 const FINGERS := [
-	# base (x, y, z), segment lengths, radius
-	[Vector3(0.0, 0.03, -0.035), [0.044, 0.026, 0.022], 0.0095],
-	[Vector3(0.0, 0.009, -0.038), [0.048, 0.03, 0.024], 0.0098],
-	[Vector3(0.0, -0.012, -0.035), [0.044, 0.028, 0.022], 0.0092],
-	[Vector3(0.0, -0.031, -0.028), [0.036, 0.022, 0.019], 0.0082],
+	# knuckle position (model space), segment lengths, base radius, tip radius, splay
+	[Vector3(0.0, 0.027, -0.046), [0.043, 0.025, 0.021], 0.0098, 0.0078, 0.07],
+	[Vector3(0.0, 0.009, -0.049), [0.047, 0.029, 0.023], 0.0102, 0.008, 0.0],
+	[Vector3(0.0, -0.009, -0.047), [0.044, 0.027, 0.022], 0.0096, 0.0076, -0.06],
+	[Vector3(0.0, -0.026, -0.041), [0.035, 0.021, 0.019], 0.0085, 0.0068, -0.14],
 ]
+const THUMB_BASE := Vector3(-0.007, 0.021, 0.036)
+const THUMB_LEN := [0.044, 0.032, 0.027]
+const THUMB_DIR := [Vector3(-0.33, 0.5, -0.8), Vector3(-0.28, 0.22, -0.93), Vector3(-0.22, 0.1, -0.97)]
+const SKIN := Color(0.84, 0.66, 0.54)
+const SKIN_PALM := Color(0.9, 0.73, 0.63)
+const KNUCKLE := Color(0.83, 0.6, 0.52)
+const NAIL := Color(0.94, 0.82, 0.78)
+const SLEEVE := Color(0.11, 0.1, 0.1)
 static var _hand_cache: Dictionary = {}
 
+static func _thumb_dirs(side_s: float) -> Array[Vector3]:
+	var out: Array[Vector3] = []
+	for d in THUMB_DIR:
+		var v: Vector3 = d
+		out.append(Vector3(v.x * side_s, v.y, v.z).normalized())
+	return out
+
 static func _hand_rest(side_s: float) -> Array:
-	# returns [bone_global_rest_positions, parent indices]
 	var pos: Array[Vector3] = [Vector3.ZERO]
 	var parent: Array[int] = [-1]
 	for f in FINGERS:
 		var b: Vector3 = f[0]
-		b.x *= side_s
 		var seg: Array = f[1]
 		var z := b.z
 		for k in 3:
-			pos.append(Vector3(b.x, b.y, z))
+			pos.append(Vector3(b.x * side_s, b.y, z))
 			parent.append(0 if k == 0 else pos.size() - 2)
 			z -= seg[k]
-	var tb := Vector3(-0.022 * side_s, 0.032, 0.022)
-	var dirs := [Vector3(-0.012 * side_s, 0.006, -0.034), Vector3(-0.004 * side_s, 0.004, -0.03), Vector3(0.0, 0.002, -0.024)]
-	var tp := tb
+	var dirs := _thumb_dirs(side_s)
+	var tp := Vector3(THUMB_BASE.x * side_s, THUMB_BASE.y, THUMB_BASE.z)
 	for k in 3:
 		pos.append(tp)
 		parent.append(0 if k == 0 else pos.size() - 2)
-		tp += dirs[k]
+		tp += dirs[k] * THUMB_LEN[k]
 	return [pos, parent]
+
+## Tints the palm-facing side of the vertices added since `start`.
+static func _palm_tint(g: Geo, start: int, side_s: float, palm_col: Color) -> void:
+	var lc := palm_col.srgb_to_linear()
+	for i in range(start, g.verts.size()):
+		var x := g.verts[i].x * side_s
+		if x < -0.004:
+			var f := clampf((-x - 0.004) / 0.006, 0.0, 1.0)
+			var c := g.cols[i]
+			g.cols[i] = Color(lerpf(c.r, lc.r, f), lerpf(c.g, lc.g, f), lerpf(c.b, lc.b, f), c.a)
 
 static func _hand_geo(side_s: float) -> Dictionary:
 	var key := side_s
 	if _hand_cache.has(key):
 		return _hand_cache[key]
 	var g := Geo.new()
-	var skin := Color(0.86, 0.68, 0.55)
-	var sleeve := Color(0.1, 0.1, 0.11)
 	var rest := _hand_rest(side_s)
 	var pos: Array[Vector3] = rest[0]
+	var s := side_s
+	# ---- palm: lofted from the wrist to the knuckles, thicker at the heel
 	g.bone = 0
-	g.mat(skin, 0.55).rbox(Vector3(-0.002 * side_s, 0.0, 0.0), Vector3(0.03, 0.082, 0.085), 0.016, 2)
-	g.mat(skin, 0.55).capsule(Vector3(0, -0.002, 0.04), Vector3(0, -0.002, 0.07), 0.026, 0.024, 10, 1)
-	g.mat(sleeve, 0.85).capsule(Vector3(0, -0.002, 0.075), Vector3(0, -0.004, 0.17), 0.038, 0.042, 12, 2)
+	var st := g.verts.size()
+	var palm := [
+		Geo.ring_xy(0.062, 0.0, 0.0175, 0.0255, 14, 2.3),
+		Geo.ring_xy(0.045, 0.001, 0.0172, 0.03, 14, 2.4),
+		Geo.ring_xy(0.02, 0.001, 0.0165, 0.037, 14, 2.5),
+		Geo.ring_xy(-0.012, 0.0, 0.0152, 0.042, 14, 2.6),
+		Geo.ring_xy(-0.036, -0.001, 0.0138, 0.0435, 14, 2.6),
+		Geo.ring_xy(-0.05, -0.001, 0.0105, 0.039, 14, 2.3),
+		Geo.ring_xy(-0.056, -0.001, 0.005, 0.03, 14, 2.0),
+	]
+	for r in palm:
+		for i in (r as PackedVector3Array).size():
+			r[i].x += 0.0015 * s   # slight cup: palm side flatter
+	g.mat(SKIN, 0.55).loft(palm, true, true)
+	# hypothenar (heel on the pinky side)
+	g.mat(SKIN, 0.55).ellipsoid(Vector3(-0.006 * s, -0.026, 0.026), Vector3(0.011, 0.013, 0.03), 10, 6)
+	_palm_tint(g, st, s, SKIN_PALM)
+	# knuckles on the back of the hand
+	for f in FINGERS:
+		var b: Vector3 = f[0]
+		g.mat(KNUCKLE, 0.5).ellipsoid(Vector3(0.0085 * s, b.y, b.z + 0.007), Vector3(0.0075, 0.0085, 0.009), 8, 5)
+	# ---- fingers
 	var bi := 1
 	for f in FINGERS:
 		var seg: Array = f[1]
-		var r: float = f[2]
+		var r0: float = f[2]
+		var r1: float = f[3]
 		for k in 3:
 			g.bone = bi
 			var a: Vector3 = pos[bi]
 			var b := a + Vector3(0, 0, -seg[k])
-			g.mat(skin, 0.55).capsule(a, b, r * (1.0 - k * 0.08), r * (0.95 - k * 0.1), 8, 2)
+			var ra := lerpf(r0, r1, k / 3.0)
+			var rb := lerpf(r0, r1, (k + 1) / 3.0)
+			st = g.verts.size()
+			g.mat(SKIN, 0.55).capsule(a, b, ra * (1.04 if k > 0 else 1.0), rb, 9, 2 if k == 2 else 1, 1.0, 0.85 if k == 2 else 1.0)
+			_palm_tint(g, st, s, SKIN_PALM)
+			if k == 2:
+				# fingernail on the back of the fingertip
+				g.mat(NAIL, 0.3).ellipsoid(Vector3(b.x + rb * 0.82 * s, b.y, b.z + 0.0075), Vector3(0.0022, rb * 0.72, 0.0078), 8, 4)
+			else:
+				# joint crease bulge
+				g.mat(KNUCKLE, 0.55).ellipsoid(Vector3(b.x + rb * 0.35 * s, b.y, b.z), Vector3(rb * 0.85, rb * 1.02, rb * 0.75), 8, 4)
 			bi += 1
+	# ---- thumb (the thenar mound moves with the metacarpal)
+	var dirs := _thumb_dirs(s)
+	var tr := [0.0135, 0.0118, 0.0106, 0.0088]
 	for k in 3:
 		g.bone = bi
 		var a: Vector3 = pos[bi]
-		var b: Vector3 = pos[bi + 1] if k < 2 else a + Vector3(0.0, 0.002, -0.024)
-		g.mat(skin, 0.55).capsule(a, b, 0.012 - k * 0.0012, 0.0105 - k * 0.0012, 8, 2)
+		var b: Vector3 = a + dirs[k] * THUMB_LEN[k]
+		st = g.verts.size()
+		g.mat(SKIN, 0.55).capsule(a, b, tr[k], tr[k + 1], 9, 2 if k == 2 else 1, 1.0, 0.85 if k == 2 else 1.0)
+		if k == 0:
+			g.mat(SKIN, 0.55).ellipsoid(a.lerp(b, 0.45) + Vector3(-0.004 * s, -0.008, 0.004), Vector3(0.012, 0.016, 0.026), 10, 6)
+		_palm_tint(g, st, s, SKIN_PALM)
+		if k == 2:
+			var back := dirs[k].cross(Vector3(0, 0, 1)).normalized() * -s
+			if back.x * s < 0.0:
+				back = -back
+			g.mat(NAIL, 0.3).ellipsoid(b - dirs[k] * 0.0075 + back * tr[3] * 0.8, Vector3(0.0045, 0.0045, 0.008), 8, 4)
 		bi += 1
+	# ---- wrist and jacket sleeve (palm bone)
+	g.bone = 0
+	g.mat(SKIN, 0.55).loft([Geo.ring_xy(0.05, 0.0, 0.0185, 0.026, 12, 2.2), Geo.ring_xy(0.075, 0.0, 0.0195, 0.0255, 12, 2.2), Geo.ring_xy(0.095, 0.0, 0.021, 0.027, 12, 2.2)], false, true)
+	g.mat(SLEEVE.lightened(0.05), 0.6).loft([Geo.ring_xy(0.08, 0.0, 0.026, 0.032, 14, 2.2), Geo.ring_xy(0.084, 0.0, 0.03, 0.036, 14, 2.2), Geo.ring_xy(0.098, 0.0, 0.031, 0.037, 14, 2.2)], true, false)
+	g.mat(SLEEVE, 0.55).loft([Geo.ring_xy(0.098, 0.0, 0.031, 0.037, 14, 2.2), Geo.ring_xy(0.13, 0.0, 0.033, 0.039, 14, 2.2), Geo.ring_xy(0.17, 0.0, 0.035, 0.041, 14, 2.2)], false, true)
 	var mesh := g.mesh({}, true)
 	var sk := Skin.new()
 	for b in pos.size():
@@ -144,57 +220,128 @@ static func _hand_geo(side_s: float) -> Dictionary:
 	_hand_cache[key] = res
 	return res
 
-func _build_hand() -> void:
-	var side_s := 1.0 if side == "right" else -1.0
+## Hand model frame -> grip pose frame (see the comment above). A real fist
+## holds the handle diagonally across the palm (from the heel of the hand to
+## the base of the index finger), so the hand is tilted 45 degrees around the
+## palm normal relative to the handle; the wrist then points back and down.
+static func model_to_grip(side_s: float) -> Transform3D:
+	return Transform3D(Basis(Vector3.RIGHT, deg_to_rad(-45.0)), Vector3(0.033 * side_s, 0.012, 0.004))
+
+## Builds the visual hand (a Node3D holding the skeleton and skinned mesh).
+static func make_visual(side_s: float) -> Node3D:
 	var hg := _hand_geo(side_s)
-	hand_mesh = Node3D.new()
-	hand_mesh.rotation_degrees = Vector3(-25, 0, 0)
-	hand_mesh.position = Vector3(0, -0.035, 0.065)
-	add_child(hand_mesh)
-	hand_skel = Skeleton3D.new()
+	var root := Node3D.new()
+	root.transform = model_to_grip(side_s)
+	var sk := Skeleton3D.new()
+	sk.name = "Skeleton"
 	var pos: Array[Vector3] = hg["pos"]
 	var parent: Array[int] = hg["parent"]
 	for b in pos.size():
-		hand_skel.add_bone("b%d" % b)
+		sk.add_bone("b%d" % b)
 	for b in pos.size():
-		hand_skel.set_bone_parent(b, parent[b])
+		sk.set_bone_parent(b, parent[b])
 		var pp: Vector3 = pos[parent[b]] if parent[b] >= 0 else Vector3.ZERO
-		hand_skel.set_bone_rest(b, Transform3D(Basis(), pos[b] - pp))
-	hand_skel.reset_bone_poses()
-	hand_mesh.add_child(hand_skel)
+		sk.set_bone_rest(b, Transform3D(Basis(), pos[b] - pp))
+	sk.reset_bone_poses()
+	root.add_child(sk)
 	var mi := MeshInstance3D.new()
 	mi.mesh = hg["mesh"]
 	mi.skin = hg["skin"]
 	mi.material_override = MeshLib.atlas()
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	hand_skel.add_child(mi)
-	mi.skeleton = mi.get_path_to(hand_skel)
+	mi.custom_aabb = AABB(Vector3(-0.2, -0.2, -0.2), Vector3(0.4, 0.4, 0.5))
+	sk.add_child(mi)
+	mi.skeleton = mi.get_path_to(sk)
+	return root
 
-## Curl the fingers from the controller (index = trigger, others = grip).
-func _pose_fingers(delta: float) -> void:
-	var holding := held != null
-	var t_index := trig() if not (held is Weapon and not (held as Weapon).is_gun()) else 1.0
-	var t_grip := 1.0 if (grip() or holding) else (0.15 if tk_target else 0.0)
-	if tk_target != null:
-		t_index = 0.2
-		t_grip = 0.25
-	if held is Weapon and (held as Weapon).is_gun():
-		t_index = 0.35 + trig() * 0.5
-	curl_index = lerpf(curl_index, t_index, 18.0 * delta)
-	curl_grip = lerpf(curl_grip, t_grip, 18.0 * delta)
-	curl_thumb = lerpf(curl_thumb, maxf(t_grip, t_index * 0.5), 18.0 * delta)
-	var side_s := 1.0 if side == "right" else -1.0
+## Poses the fingers. c = [index, middle, ring, pinky, thumb] curl 0..1.
+static func apply_pose(sk: Skeleton3D, side_s: float, c: PackedFloat32Array) -> void:
 	var b := 1
 	for f in 4:
-		var c := curl_index if f == 0 else curl_grip
+		var curl: float = c[f]
+		var splay: float = FINGERS[f][4] * (1.0 - curl * 0.8)
+		var w := [1.35, 1.6, 1.0]
+		var relax := [0.12, 0.2, 0.12]
 		for k in 3:
-			var ang: float = c * [1.35, 1.6, 1.0][k] + 0.08
-			hand_skel.set_bone_pose_rotation(b, Quaternion(Vector3.UP, ang * side_s))
+			var ang: float = relax[k] + curl * w[k]
+			var q := Quaternion(Vector3.UP, ang * side_s)
+			if k == 0:
+				q = q * Quaternion(Vector3.RIGHT, splay)
+			sk.set_bone_pose_rotation(b, q)
 			b += 1
+	var dirs := _thumb_dirs(side_s)
+	var ct: float = c[4]
+	# metacarpal swings across the palm, the two joints curl
+	var across := Vector3(-0.15 * side_s, -1.0, 0.25).normalized()
 	for k in 3:
-		var ang: float = curl_thumb * [0.5, 0.7, 0.6][k]
-		hand_skel.set_bone_pose_rotation(b, Quaternion(Vector3(0.3, 1.0, 0.0).normalized(), ang * side_s))
+		var axis := dirs[k].cross(across).normalized()
+		var ang: float = [0.35, 0.55, 0.7][k] * ct + [0.05, 0.1, 0.12][k]
+		sk.set_bone_pose_rotation(b, Quaternion(axis, ang))
 		b += 1
+
+func _build_hand() -> void:
+	var side_s := 1.0 if side == "right" else -1.0
+	hand_mesh = make_visual(side_s)
+	add_child(hand_mesh)
+	hand_skel = hand_mesh.get_node("Skeleton")
+
+## Curl the fingers from the controller (trigger, grip and touch sensors).
+func _pose_fingers(delta: float) -> void:
+	var target := PackedFloat32Array([0.15, 0.15, 0.15, 0.15, 0.2])
+	var g := grip_amount()
+	var t := trig()
+	var t_touch := t > 0.04 or (not Game.desktop_mode and is_button_pressed("trigger_touch"))
+	var th_touch := Game.desktop_mode or is_button_pressed("primary_touch") or is_button_pressed("ax_touch") or is_button_pressed("by_touch")
+	if held is Weapon:
+		var w := held as Weapon
+		target = PackedFloat32Array([0.45 + 0.35 * t if w.is_gun() else 0.92, 0.92, 0.95, 0.97, 0.75])
+	elif held != null:
+		target = PackedFloat32Array([0.9, 0.95, 0.97, 1.0, 0.8])
+	elif tk_target != null:
+		target = PackedFloat32Array([0.32, 0.35, 0.38, 0.42, 0.3])
+	else:
+		target[0] = (0.2 + 0.8 * t) if t_touch else 0.0
+		for f in [1, 2, 3]:
+			target[f] = 0.1 + 0.9 * g
+		target[4] = (0.55 if th_touch else 0.08) + 0.3 * g
+	for i in 5:
+		curls[i] = lerpf(curls[i], target[i], minf(1.0, 20.0 * delta))
+	apply_pose(hand_skel, 1.0 if side == "right" else -1.0, curls)
+
+# ---------------------------------------------------------------- aim pose
+## Typical aim pose relative to the grip pose (used on desktop or if the
+## runtime does not report an aim pose).
+static func grip_to_aim() -> Transform3D:
+	return Transform3D(Basis(Vector3.RIGHT, deg_to_rad(-58.0)), Vector3(0.0, -0.035, -0.045))
+
+## The controller's pointing ray (guns, telekinesis, force push).
+func aim_xform() -> Transform3D:
+	if not Game.desktop_mode:
+		var tr := XRServer.get_tracker(tracker) as XRPositionalTracker
+		if tr:
+			var p := tr.get_pose(&"aim")
+			if p and p.has_tracking_data:
+				return (get_parent() as Node3D).global_transform * p.get_adjusted_transform()
+	return global_transform * grip_to_aim()
+
+func aim_origin() -> Vector3:
+	return aim_xform().origin
+
+## Where held things sit: just in front of the closed fingers.
+func hold_point() -> Vector3:
+	return global_transform * Vector3(0.012 * (1.0 if side == "right" else -1.0), -0.05, 0.0)
+
+## Transform (in this node's space) for a held weapon.
+func weapon_hold(w: Weapon) -> Transform3D:
+	if w.is_gun():
+		# barrel along the aim ray, grip handle in the palm
+		var rel := global_transform.affine_inverse() * aim_xform()
+		var b := rel.basis.orthonormalized()
+		return Transform3D(b, -(b * Vector3(0, -0.045, 0.0)) + Vector3(0, 0.0, 0.0))
+	# melee: handle through the fist, blade out of the thumb side, edge forward;
+	# each weapon's handle centre (weapon space, along -Z) sits in the palm
+	var hold_z: float = {"bat": 0.02, "baton": -0.01, "machete": -0.065, "knife": -0.045, "axe": -0.07}.get(w.type, 0.0)
+	return Transform3D(Basis(), Vector3(0.0, 0.0, -hold_z))
 
 func haptic(amplitude: float, duration: float) -> void:
 	if not Game.desktop_mode:
@@ -207,6 +354,9 @@ func trig() -> float:
 func grip() -> bool:
 	return sim_grip if Game.desktop_mode else (get_float("grip") > 0.6 or is_button_pressed("grip_click"))
 
+func grip_amount() -> float:
+	return (1.0 if sim_grip else 0.0) if Game.desktop_mode else get_float("grip")
+
 func click() -> bool:
 	return sim_click if Game.desktop_mode else is_button_pressed("primary_click")
 
@@ -214,7 +364,7 @@ func stick() -> Vector2:
 	return sim_stick if Game.desktop_mode else get_vector2("primary")
 
 func aim_dir() -> Vector3:
-	return -global_transform.basis.z
+	return -aim_xform().basis.z
 
 func is_holding_gun() -> bool:
 	return held is Weapon and (held as Weapon).is_gun()
@@ -301,7 +451,7 @@ func _try_punch() -> void:
 			continue
 		var target := Game.hittable_of(body)
 		var speed := velocity.length()
-		var pos := global_position + aim_dir() * 0.05
+		var pos := hold_point()
 		if target != null:
 			var part := ""
 			if body.has_meta("part"):
@@ -344,7 +494,7 @@ func grab_body(body: Node) -> void:
 			return
 		ped.go_ragdoll(Vector3.ZERO)
 		if ped.ragdoll and is_instance_valid(ped.ragdoll):
-			_hold_rigid(ped.ragdoll.nearest_body(global_position))
+			_hold_rigid(ped.ragdoll.nearest_body(hold_point()))
 	elif body is Car:
 		var car := body as Car
 		if car.mode == Car.Mode.PLAYER:
@@ -384,7 +534,7 @@ func _update_hold(delta: float) -> void:
 		held = null
 		held_ragdoll = null
 		return
-	var target := global_position + aim_dir() * (0.9 if rb is Car else 0.08)
+	var target := (aim_origin() + aim_dir() * 0.9) if rb is Car else hold_point()
 	var diff := target - rb.global_position
 	var want := diff * 18.0
 	if want.length() > 28.0:
@@ -416,7 +566,7 @@ func release(throw: bool = true) -> void:
 # ---------------------------------------------------------------- telekinesis
 func tk_try_grab() -> void:
 	var space := get_world_3d().direct_space_state
-	var from := global_position
+	var from := aim_origin()
 	var to := from + aim_dir() * 45.0
 	var exclude: Array[RID] = []
 	if player is CollisionObject3D:
@@ -473,7 +623,7 @@ func _update_tk(delta: float) -> void:
 	tk_dist = clampf(tk_dist + s.y * delta * 6.0, 0.6, 12.0)
 	if tk_pull:
 		tk_dist = maxf(0.3, tk_dist - delta * 10.0)
-	var target := global_position + aim_dir() * tk_dist + Vector3(0, 0.1, 0)
+	var target := aim_origin() + aim_dir() * tk_dist + Vector3(0, 0.1, 0)
 	var diff := target - rb.global_position
 	var want := diff * 10.0
 	if want.length() > 30.0:
@@ -483,7 +633,7 @@ func _update_tk(delta: float) -> void:
 	if rb is Car:
 		rb.angular_velocity = rb.angular_velocity.lerp(Vector3(0, 0.6, 0), 0.05)
 	# visuals
-	var a := global_position + aim_dir() * 0.05
+	var a := aim_origin() + aim_dir() * 0.03
 	var b := rb.global_position
 	var d := b - a
 	var len := d.length()
@@ -533,9 +683,9 @@ func force_push() -> void:
 	push_cd = 1.3
 	push_t = 0.0
 	push_ring.visible = true
-	push_ring.global_position = global_position + aim_dir() * 1.0
+	push_ring.global_position = aim_origin() + aim_dir() * 1.0
 	var dir := aim_dir()
-	var center := global_position + dir * 2.8
+	var center := aim_origin() + dir * 2.8
 	Game.sfx.play("whoosh", global_position, 4.0, 0.6)
 	haptic(1.0, 0.25)
 	Game.cop_saw_player()
@@ -550,7 +700,7 @@ func force_push() -> void:
 		var col: Node = h["collider"]
 		if col == null or col == player:
 			continue
-		var to_col: Vector3 = col.global_position - global_position
+		var to_col: Vector3 = col.global_position - aim_origin()
 		if to_col.normalized().dot(dir) < 0.25:
 			continue
 		var falloff := clampf(1.0 - to_col.length() / 7.5, 0.25, 1.0)

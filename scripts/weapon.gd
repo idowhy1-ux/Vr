@@ -71,12 +71,13 @@ static func visual_mesh(t: String) -> ArrayMesh:
 	match t:
 		"bat":
 			g.xf = to_fwd
-			g.mat(RUBBER, 0.9).lathe([Vector2(0.0, 0.075), Vector2(0.024, 0.074), Vector2(0.027, 0.066), Vector2(0.017, 0.056), Vector2(0.0145, 0.03), Vector2(0.0145, -0.17)], 12, true, false)
-			g.mat(WOOD, 0.55).lathe([Vector2(0.0145, -0.17), Vector2(0.015, -0.24), Vector2(0.02, -0.37), Vector2(0.029, -0.52), Vector2(0.0335, -0.66), Vector2(0.034, -0.74), Vector2(0.03, -0.765), Vector2(0.0, -0.775)], 14, false, true)
+			# knob behind the fist (+Z), barrel forward (-Z); lathe Y maps to -Z
+			g.mat(RUBBER, 0.9).lathe([Vector2(0.0, -0.075), Vector2(0.024, -0.074), Vector2(0.027, -0.066), Vector2(0.017, -0.056), Vector2(0.0145, -0.03), Vector2(0.0145, 0.17)], 12, true, false)
+			g.mat(WOOD, 0.55).lathe([Vector2(0.0145, 0.17), Vector2(0.015, 0.24), Vector2(0.02, 0.37), Vector2(0.029, 0.52), Vector2(0.0335, 0.66), Vector2(0.034, 0.74), Vector2(0.03, 0.765), Vector2(0.0, 0.775)], 14, false, true)
 		"baton":
 			g.xf = to_fwd
-			g.mat(RUBBER, 0.7).lathe([Vector2(0.0, 0.07), Vector2(0.019, 0.068), Vector2(0.019, -0.09), Vector2(0.0, -0.092)], 10)
-			g.mat(POLYMER, 0.35, 0.2).lathe([Vector2(0.0, -0.09), Vector2(0.015, -0.09), Vector2(0.014, -0.5), Vector2(0.016, -0.52), Vector2(0.0, -0.53)], 10)
+			g.mat(RUBBER, 0.7).lathe([Vector2(0.0, -0.07), Vector2(0.019, -0.068), Vector2(0.019, 0.09), Vector2(0.0, 0.092)], 10)
+			g.mat(POLYMER, 0.35, 0.2).lathe([Vector2(0.0, 0.09), Vector2(0.015, 0.09), Vector2(0.014, 0.5), Vector2(0.016, 0.52), Vector2(0.0, 0.53)], 10)
 			g.xf = Transform3D.IDENTITY
 			g.mat(POLYMER, 0.4).capsule(Vector3(0, 0, -0.07), Vector3(0, -0.13, -0.07), 0.012, 0.012, 8, 2)
 		"knife":
@@ -220,7 +221,10 @@ func on_grab(hand: Node3D) -> void:
 	collision_mask = 0
 	hit_cd.clear()
 	reparent(hand, false)
-	transform = Transform3D(Basis(), Vector3(0, -0.03, 0.015))
+	if hand.has_method("weapon_hold"):
+		transform = hand.weapon_hold(self)
+	else:
+		transform = Transform3D(Basis(), Vector3(0, -0.03, 0.015))
 	if blade:
 		blade.monitoring = true
 	Game.sfx.play("pickup", global_position, -8.0)

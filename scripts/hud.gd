@@ -14,9 +14,11 @@ var hp_mat: StandardMaterial3D
 func setup(p: Player) -> void:
 	player = p
 	# wrist panel
+	# a watch-style display on the back of the left wrist (grip-pose space:
+	# back of the left hand faces -X, fingers towards -Y, thumb towards -Z)
 	var panel := Node3D.new()
-	panel.position = Vector3(0, 0.035, 0.1)
-	panel.rotation_degrees = Vector3(-90, 0, 0)
+	var k := sqrt(0.5)
+	panel.transform = Transform3D(Basis(Vector3(0, -k, -k), Vector3(0, -k, k), Vector3(-1, 0, 0)), Vector3(-0.072, 0.083, 0.075))
 	p.left.add_child(panel)
 	var bg := MeshLib.inst(MeshLib.box(Vector3(0.12, 0.075, 0.004)), MeshLib.mat_alpha(Color(0.05, 0.05, 0.08, 0.75)), Vector3(0, 0, -0.002), Vector3.ZERO, panel)
 	hp_bg = MeshLib.inst(MeshLib.box(Vector3(0.1, 0.012, 0.004)), MeshLib.mat(Color(0.2, 0.05, 0.05), 1.0), Vector3(0, 0.022, 0.001), Vector3.ZERO, panel)

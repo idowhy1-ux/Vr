@@ -155,35 +155,65 @@ func _build_car1() -> void:
 	cam.look_at(Vector3(0.0, 0.7, 0))
 	cam.fov = 50
 
+func _controller_proxy(parent: Node3D) -> void:
+	# rough Quest Touch shape in grip space: handle along Z, ring above the thumb
+	var g := Geo.new()
+	g.mat(Color(0.12, 0.12, 0.13), 0.5).capsule(Vector3(0, 0.0, 0.055), Vector3(0, -0.01, -0.03), 0.018, 0.02, 10, 2)
+	g.mat(Color(0.12, 0.12, 0.13), 0.5).ellipsoid(Vector3(0, -0.01, -0.05), Vector3(0.03, 0.035, 0.022), 12, 6)
+	var mi := MeshInstance3D.new()
+	mi.mesh = g.mesh()
+	mi.material_override = MeshLib.atlas()
+	parent.add_child(mi)
+
 func _build_hands() -> void:
-	for i in 4:
-		var side := "right" if i % 2 == 0 else "left"
-		var hg := Hand._hand_geo(1.0 if side == "right" else -1.0)
-		var sk := Skeleton3D.new()
-		var pos: Array[Vector3] = hg["pos"]
-		var parent: Array[int] = hg["parent"]
-		for b in pos.size():
-			sk.add_bone("b%d" % b)
-		for b in pos.size():
-			sk.set_bone_parent(b, parent[b])
-			var pp: Vector3 = pos[parent[b]] if parent[b] >= 0 else Vector3.ZERO
-			sk.set_bone_rest(b, Transform3D(Basis(), pos[b] - pp))
-		sk.reset_bone_poses()
-		sk.position = Vector3(-0.3 + i * 0.2, 1.2, 0)
-		sk.rotation_degrees = Vector3(0, -90 if side == "right" else 90, 0)
-		add_child(sk)
-		var mi := MeshInstance3D.new()
-		mi.mesh = hg["mesh"]
-		mi.skin = hg["skin"]
-		mi.material_override = MeshLib.atlas()
-		sk.add_child(mi)
-		mi.skeleton = mi.get_path_to(sk)
-		if i >= 2:
-			var s := 1.0 if side == "right" else -1.0
-			for b in range(1, 13):
-				sk.set_bone_pose_rotation(b, Quaternion(Vector3.UP, [1.35, 1.6, 1.0][(b - 1) % 3] * s))
-	cam.position = Vector3(0.0, 1.25, -0.75)
+	# poses: open, fist, point, thumb off, holding
+	var poses := [[0.0, 0.1, 0.1, 0.1, 0.1], [1.0, 1.0, 1.0, 1.0, 0.85], [0.0, 1.0, 1.0, 1.0, 0.85], [0.6, 0.6, 0.6, 0.6, 0.05], [0.25, 0.1, 0.1, 0.1, 0.55]]
+	for i in 5:
+		for side_s in [1.0, -1.0]:
+			var grip := Node3D.new()
+			# neutral hold: handle tilted forward, knuckles facing the camera (-Z world)
+			grip.transform = Transform3D(Basis(Vector3.RIGHT, deg_to_rad(58)), Vector3(-0.8 + i * 0.38 + (0.08 if side_s > 0 else -0.08), 1.2, 0))
+			add_child(grip)
+			var vis := Hand.make_visual(side_s)
+			grip.add_child(vis)
+			Hand.apply_pose(vis.get_node("Skeleton"), side_s, PackedFloat32Array(poses[i]))
+			if i == 1:
+				_controller_proxy(grip)
+	# camera looks at the knuckle side (grip -Y points towards -Z world here)
+	cam.position = Vector3(0.35, 1.45, -1.1)
 	cam.look_at(Vector3(0.0, 1.2, 0))
+	cam.fov = 42
+
+func _build_fpv() -> void:
+	cam.position = Vector3(0, 1.7, 0)
+	cam.rotation = Vector3(deg_to_rad(-12), 0, 0)
+	cam.fov = 90
+	var inv := Hand.grip_to_aim().affine_inverse()
+	var types: Array = ["bat", "pistol"]
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--weapons="):
+			types = a.substr(10).split(",")
+	for k in 2:
+		var side_s := -1.0 if k == 0 else 1.0
+		var aim := Transform3D(Basis(Vector3.RIGHT, deg_to_rad(-12)), Vector3(-0.2 if k == 0 else 0.2, 1.42, -0.42))
+		var grip := Node3D.new()
+		grip.transform = aim * inv
+		add_child(grip)
+		var vis := Hand.make_visual(side_s)
+		grip.add_child(vis)
+		var w := MeshInstance3D.new()
+		w.mesh = Weapon.visual_mesh(types[k])
+		w.material_override = MeshLib.atlas()
+		if types[k] in ["pistol", "smg", "shotgun"]:
+			var rel := grip.transform.affine_inverse() * aim
+			var b := rel.basis.orthonormalized()
+			w.transform = Transform3D(b, -(b * Vector3(0, -0.045, 0.0)))
+			Hand.apply_pose(vis.get_node("Skeleton"), side_s, PackedFloat32Array([0.5, 0.92, 0.95, 0.97, 0.75]))
+		else:
+			var hz: float = {"bat": 0.02, "baton": -0.01, "machete": -0.065, "knife": -0.045, "axe": -0.07}.get(types[k], 0.0)
+			w.transform = Transform3D(Basis(), Vector3(0, 0, -hz))
+			Hand.apply_pose(vis.get_node("Skeleton"), side_s, PackedFloat32Array([0.92, 0.92, 0.95, 0.97, 0.75]))
+		grip.add_child(w)
 
 func _tri(m: Mesh) -> int:
 	var t := 0
