@@ -293,8 +293,10 @@ func set_trigger(pressed: bool) -> void:
 func _physics_process(delta: float) -> void:
 	fire_cd -= delta
 	if kick > 0.0:
-		kick = maxf(0.0, kick - delta * 0.4)
+		# recoil: the gun jumps back and the muzzle climbs, then settles
+		kick = maxf(0.0, kick - delta * (0.35 + kick * 6.0))
 		visual.position.z = kick
+		visual.rotation.x = kick * 5.5
 	if is_gun() and trigger_held and cfg["auto"] and fire_cd <= 0.0 and held_by:
 		fire()
 
@@ -308,6 +310,9 @@ func fire() -> void:
 	Game.sfx.play(cfg["sound"], from, 2.0)
 	if held_by and held_by.has_method("haptic"):
 		held_by.haptic(0.5 if type == "smg" else 1.0, 0.06 if type == "smg" else 0.12)
+	# spent casing flies out to the right and tinkles on the ground
+	var eject := muzzle.global_transform.basis.x * 1.6 + muzzle.global_transform.basis.y * 1.2
+	Game.gore.casing(global_transform * Vector3(0, 0.04, -0.06), eject, type == "shotgun")
 	Game.panic(from, 25.0)
 	Game.cop_saw_player()
 	var space := get_world_3d().direct_space_state
@@ -327,9 +332,19 @@ func fire() -> void:
 			Game.gore.tracer(from, to)
 			continue
 		var hit_pos: Vector3 = r["position"]
+		var hit_n: Vector3 = r["normal"]
 		Game.gore.tracer(from, hit_pos)
 		var col: Node = r["collider"]
 		var target := Game.hittable_of(col)
+		if col is Car:
+			var car := col as Car
+			var ly := car.to_local(hit_pos).y
+			var glass := ly > float(car.dims["belt"]) + 0.03
+			Game.gore.impact(hit_pos, hit_n, "glass" if glass else "metal")
+			if not glass:
+				car.dent(hit_pos, dir, 0.02)
+		elif col is StaticBody3D:
+			Game.gore.impact(hit_pos, hit_n, "concrete")
 		if target:
 			var part := ""
 			if col.has_meta("part"):

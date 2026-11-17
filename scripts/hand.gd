@@ -27,6 +27,10 @@ var grip_prev := false
 var trigger_prev := false
 var click_prev := false
 var hand_mesh: Node3D
+var hand_mat: ShaderMaterial
+var blood := 0.0
+var wheel_car: Car = null       # set while this hand holds a steering wheel
+var wheel_alpha := 0.0          # where on the rim (angle in the wheel's own spinning frame)
 # desktop simulation inputs
 var sim_trigger := 0.0
 var sim_grip := false
@@ -284,6 +288,51 @@ func _build_hand() -> void:
 	hand_mesh = make_visual(side_s)
 	add_child(hand_mesh)
 	hand_skel = hand_mesh.get_node("Skeleton")
+	hand_mat = MeshLib.hand_material()
+	for c in hand_skel.get_children():
+		if c is MeshInstance3D:
+			(c as MeshInstance3D).material_override = hand_mat
+
+## Blood builds up on the hand from punching and holding bodies.
+func add_blood(amount: float) -> void:
+	blood = clampf(blood + amount, 0.0, 1.0)
+	hand_mat.set_shader_parameter("blood", blood)
+
+# ---------------------------------------------------------------- steering wheel
+func attach_wheel(car: Car, alpha: float) -> void:
+	wheel_car = car
+	wheel_alpha = alpha
+	hand_mesh.top_level = true
+	_snap_to_wheel()
+
+func detach_wheel() -> void:
+	wheel_car = null
+	hand_mesh.top_level = false
+	hand_mesh.transform = model_to_grip(1.0 if side == "right" else -1.0)
+
+func _process(_delta: float) -> void:
+	if wheel_car != null:
+		if not is_instance_valid(wheel_car):
+			detach_wheel()
+		else:
+			_snap_to_wheel()
+
+## Places the visible hand on the rim, wrapped around it, palm towards the
+## centre and thumb pointing round towards 12 o'clock.
+func _snap_to_wheel() -> void:
+	var a := wheel_alpha - wheel_car.wheel_angle
+	var r := Vector3(cos(a), 0.0, sin(a))
+	var x: Vector3
+	var z: Vector3
+	if side == "right":
+		x = r
+		z = Vector3(-sin(a), 0.0, cos(a))
+	else:
+		x = -r
+		z = Vector3(sin(a), 0.0, -cos(a))
+	var y := z.cross(x)
+	var grip_on_rim := Transform3D(Basis(x, y, z), r * Car.WHEEL_R)
+	hand_mesh.global_transform = wheel_car.wheel_frame() * grip_on_rim * model_to_grip(1.0 if side == "right" else -1.0)
 
 ## Curl the fingers from the controller (trigger, grip and touch sensors).
 func _pose_fingers(delta: float) -> void:
@@ -292,7 +341,9 @@ func _pose_fingers(delta: float) -> void:
 	var t := trig()
 	var t_touch := t > 0.04 or (not Game.desktop_mode and is_button_pressed("trigger_touch"))
 	var th_touch := Game.desktop_mode or is_button_pressed("primary_touch") or is_button_pressed("ax_touch") or is_button_pressed("by_touch")
-	if held is Weapon:
+	if wheel_car != null:
+		target = PackedFloat32Array([0.55 + 0.35 * t, 0.82, 0.85, 0.88, 0.7])
+	elif held is Weapon:
 		var w := held as Weapon
 		target = PackedFloat32Array([0.45 + 0.35 * t if w.is_gun() else 0.92, 0.92, 0.95, 0.97, 0.75])
 	elif held != null:
@@ -406,6 +457,13 @@ func _physics_process(delta: float) -> void:
 	var g := grip()
 	var t := trig()
 	var c := click()
+	if wheel_car != null:
+		# on the steering wheel: no grabbing, punching or powers
+		grip_prev = g
+		trigger_prev = t > 0.6
+		click_prev = c
+		_pose_fingers(delta)
+		return
 	# --- grip: grab / release
 	if g and not grip_prev:
 		if held == null:
@@ -430,7 +488,7 @@ func _physics_process(delta: float) -> void:
 		tk_release()
 	trigger_prev = t > 0.6
 	# --- stick click: force push
-	if c and not click_prev and push_cd <= 0.0:
+	if c and not click_prev and push_cd <= 0.0 and not in_car:
 		force_push()
 	click_prev = c
 	# --- holding / telekinesis update
@@ -458,6 +516,8 @@ func _try_punch() -> void:
 				part = body.get_meta("part")
 			var dmg := speed * 9.0            # super strength
 			target.take_hit(dmg, velocity * 16.0 + Vector3.UP * 20.0, pos, part, "punch")
+			if not (target is Car):
+				add_blood(0.06 + speed * 0.012)
 			punch_cd = 0.28
 			haptic(1.0, 0.1)
 			Game.sfx.play("punch", pos, 2.0)
@@ -523,13 +583,15 @@ func _hold_rigid(rb: RigidBody3D) -> void:
 		if is_instance_valid(held_ragdoll):
 			held_ragdoll.held_count += 1
 			held_ragdoll.unfreeze()
-			if held_ragdoll.alive:
-				Game.sfx.play("scream", rb.global_position, -4.0, Game.randf_range(0.9, 1.2))
+			if held_ragdoll.alive and held_ragdoll.ped and is_instance_valid(held_ragdoll.ped):
+				held_ragdoll.ped.voice("scream", -2.0)
 	haptic(0.5, 0.08)
 	Game.sfx.play("tk_grab", global_position, -10.0, 0.6)
 
 func _update_hold(delta: float) -> void:
 	var rb := held as RigidBody3D
+	if held_ragdoll and is_instance_valid(held_ragdoll) and (not held_ragdoll.severed.is_empty() or not held_ragdoll.alive):
+		add_blood(delta * 0.05)
 	if not is_instance_valid(rb):
 		held = null
 		held_ragdoll = null
@@ -605,8 +667,8 @@ func tk_try_grab() -> void:
 		if is_instance_valid(tk_ragdoll):
 			tk_ragdoll.held_count += 1
 			tk_ragdoll.unfreeze()
-			if tk_ragdoll.alive:
-				Game.sfx.play("scream", rb.global_position, -2.0, Game.randf_range(0.9, 1.25))
+			if tk_ragdoll.alive and tk_ragdoll.ped and is_instance_valid(tk_ragdoll.ped):
+				tk_ragdoll.ped.voice("scream", 0.0)
 	tk_beam.visible = true
 	tk_halo.visible = true
 	tk_hum.play()

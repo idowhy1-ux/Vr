@@ -201,6 +201,76 @@ void fragment() {
 	_atlas.shader = sh
 	return _atlas
 
+static var _foliage: ShaderMaterial
+
+## Atlas shader + gentle wind sway that grows with height (trees).
+static func foliage() -> ShaderMaterial:
+	if _foliage:
+		return _foliage
+	var sh := Shader.new()
+	sh.code = """
+shader_type spatial;
+render_mode cull_back, specular_schlick_ggx;
+void vertex() {
+	float h = max(VERTEX.y - 1.6, 0.0);
+	vec3 wp = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float t = TIME;
+	float gust = 0.6 + 0.4 * sin(t * 0.37 + wp.x * 0.05);
+	VERTEX.x += (sin(t * 1.3 + wp.x * 0.35 + wp.z * 0.2) * 0.045 + sin(t * 3.1 + VERTEX.y * 2.0) * 0.008) * h * gust;
+	VERTEX.z += (cos(t * 1.05 + wp.z * 0.3) * 0.035 + cos(t * 2.7 + VERTEX.x * 2.0) * 0.008) * h * gust;
+}
+void fragment() {
+	ALBEDO = COLOR.rgb;
+	ROUGHNESS = UV2.x;
+	METALLIC = UV2.y;
+	EMISSION = COLOR.rgb * COLOR.a * 3.0;
+}
+"""
+	_foliage = ShaderMaterial.new()
+	_foliage.shader = sh
+	return _foliage
+
+static var _hand_shader: Shader
+
+## Atlas shader + blood that builds up on the skin (uniform `blood` 0..1).
+static func hand_material() -> ShaderMaterial:
+	if _hand_shader == null:
+		_hand_shader = Shader.new()
+		_hand_shader.code = """
+shader_type spatial;
+render_mode cull_back, specular_schlick_ggx;
+uniform float blood = 0.0;
+varying vec3 lp;
+float h3(vec3 p) { return fract(sin(dot(p, vec3(17.1, 113.7, 59.3))) * 43758.5453); }
+float n3(vec3 p) {
+	vec3 i = floor(p);
+	vec3 f = fract(p);
+	f = f * f * (3.0 - 2.0 * f);
+	return mix(mix(mix(h3(i), h3(i + vec3(1, 0, 0)), f.x), mix(h3(i + vec3(0, 1, 0)), h3(i + vec3(1, 1, 0)), f.x), f.y),
+		mix(mix(h3(i + vec3(0, 0, 1)), h3(i + vec3(1, 0, 1)), f.x), mix(h3(i + vec3(0, 1, 1)), h3(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+void vertex() { lp = VERTEX; }
+void fragment() {
+	vec3 c = COLOR.rgb;
+	float r = UV2.x;
+	if (blood > 0.001) {
+		float n = n3(lp * 38.0) * 0.6 + n3(lp * 110.0) * 0.4;
+		// knuckles and fingers get bloody first (towards -Z in the hand model)
+		float bias = clamp(-lp.z * 6.0 + 0.4, 0.0, 1.0) * 0.35;
+		float m = smoothstep(1.02 - blood * 0.9, 1.08 - blood * 0.9, n + bias);
+		c = mix(c, vec3(0.16, 0.0, 0.005), m * 0.92);
+		r = mix(r, 0.22, m);
+	}
+	ALBEDO = c;
+	ROUGHNESS = r;
+	METALLIC = UV2.y;
+	EMISSION = COLOR.rgb * COLOR.a * 3.0;
+}
+"""
+	var m := ShaderMaterial.new()
+	m.shader = _hand_shader
+	return m
+
 ## One entry for build(): primitive mesh, local placement and surface look.
 static func part(mesh: Mesh, pos: Vector3, rot_deg: Vector3, color: Color, rough: float = 0.8, metal: float = 0.0, emit: float = 0.0, scale: Vector3 = Vector3.ONE) -> Array:
 	var b := Basis.from_euler(rot_deg * (PI / 180.0)).scaled(scale)

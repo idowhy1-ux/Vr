@@ -347,7 +347,7 @@ func _build_furniture() -> void:
 				var tt: Transform3D = t
 				tt.origin -= center
 				arr.append(tt)
-			_mm(meshes[kind], arr, kind in ["lamp", "tree0", "tree1", "tree2", "light"], ranges[kind], center)
+			_mm(meshes[kind], arr, kind in ["lamp", "tree0", "tree1", "tree2", "light"], ranges[kind], center, MeshLib.foliage() if kind.begins_with("tree") else null)
 	_chunks.clear()
 
 ## Basis whose local +X points along `dir` (horizontal).
@@ -359,7 +359,7 @@ func _face_x(dir: Vector3) -> Basis:
 func _face_z(dir: Vector3) -> Basis:
 	return Basis.looking_at(Vector3(dir.x, 0, dir.z).normalized(), Vector3.UP)
 
-func _mm(mesh: Mesh, xforms: Array[Transform3D], shadows: bool, vis: float = 0.0, origin := Vector3.ZERO) -> void:
+func _mm(mesh: Mesh, xforms: Array[Transform3D], shadows: bool, vis: float = 0.0, origin := Vector3.ZERO, mat: Material = null) -> void:
 	if xforms.is_empty():
 		return
 	var mm := MultiMesh.new()
@@ -370,7 +370,7 @@ func _mm(mesh: Mesh, xforms: Array[Transform3D], shadows: bool, vis: float = 0.0
 		mm.set_instance_transform(i, xforms[i])
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
-	mmi.material_override = MeshLib.atlas()
+	mmi.material_override = mat if mat else MeshLib.atlas()
 	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if shadows else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	mmi.position = origin
 	mmi.visibility_range_end = vis
@@ -498,7 +498,7 @@ func _build_environment() -> void:
 	sun.light_energy = 1.35
 	sun.shadow_enabled = Game.shadows
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
-	sun.directional_shadow_max_distance = 32.0
+	sun.directional_shadow_max_distance = 28.0
 	sun.shadow_bias = 0.04
 	sun.shadow_normal_bias = 1.2
 	sun.shadow_opacity = 0.85

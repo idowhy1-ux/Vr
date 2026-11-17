@@ -222,8 +222,9 @@ func dismember(b: int, impulse: Vector3 = Vector3.ZERO) -> void:
 	_add_stump(body, Vector3.ZERO, true)
 	Game.gore.burst(at, 0.8)
 	Game.gore.spray(at, Vector3.UP, 1.6)
-	Game.sfx.play("crack", at, 2.0)
-	Game.sfx.play("splat", at, 0.0)
+	Game.sfx.play("crack", at, 3.0)
+	Game.sfx.play("splat", at, 2.0)
+	Game.sfx.play("crunch", at, 0.0)
 	_add_drip(parent, parent.to_local(at), 7.0)
 	_add_drip(body, Vector3.ZERO, 4.0)
 	if b == B.B_CHEST:
@@ -316,6 +317,7 @@ func _on_part_contact(other: Node, b: int) -> void:
 	Game.gore.decal(pos, clampf(speed / 8.0, 0.6, 2.0))
 	if speed > 12.0:
 		Game.sfx.play("crack", pos, 0.0)
+		Game.sfx.play("thud", pos, 0.0)
 		if b == B.B_HEAD and speed > 16.0:
 			pop_head(body.linear_velocity * 0.2)
 	else:

@@ -40,6 +40,21 @@ var far := false
 var age := 0.0
 var fire: CPUParticles3D
 var steer_wheel: Node3D
+var steer_tilt: Node3D
+# hand steering: the wheel's spin angle (rad, + = anticlockwise as seen by the
+# driver = left), set by the player's hands; self-centres when released
+const WHEEL_R := 0.18
+const WHEEL_LOCK := 2.6
+var wheel_angle := 0.0
+var wheel_held := false
+# audio
+var engine_high: AudioStreamPlayer3D
+var skid_player: AudioStreamPlayer3D
+var horn_player: AudioStreamPlayer3D
+var horn_on := false
+var rpm := 0.25
+var gear := 1
+const GEAR_TOP := [0.0, 7.0, 13.5, 21.0, 29.0, 38.0, 60.0]
 
 var body_type := "sedan"
 var dims: Dictionary
@@ -94,6 +109,8 @@ func _ready() -> void:
 	body_entered.connect(_on_body_entered)
 	engine_player = Game.sfx.make_loop_player("engine", self, -14.0)
 	engine_player.play()
+	engine_high = Game.sfx.make_loop_player("engine_high", self, -60.0)
+	skid_player = Game.sfx.make_loop_player("skid", self, -60.0)
 	if is_police:
 		siren_player = Game.sfx.make_loop_player("siren", self, -4.0)
 	if Game.gore:
@@ -133,6 +150,7 @@ func _build_visual() -> void:
 	tilt.rotation_degrees = Vector3(62, 0, 0)
 	add_child(tilt)
 	steer_wheel = MeshLib.inst_built(_steer_mesh(), Vector3.ZERO, Vector3.ZERO, tilt, 25.0)
+	steer_tilt = tilt
 	# occupants: real people sitting in the seats
 	driver_meshes = []
 	var occupants := 2 if is_police else 1
@@ -247,6 +265,26 @@ func dent(world_pos: Vector3, dir_world: Vector3, amount: float) -> void:
 	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, dent_arrays)
 	body_mi.mesh = am
 
+var _blood_marks := 0
+
+## Splatter stuck to the bodywork where a person was hit.
+func _blood_on_body(world_pos: Vector3) -> void:
+	if _blood_marks >= 8:
+		return
+	_blood_marks += 1
+	for i in 2:
+		var mi := MeshInstance3D.new()
+		mi.mesh = MeshLib.quad(Vector2(1, 1))
+		mi.material_override = Game.gore.decals.material_override
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(mi)
+		var lp := to_local(world_pos) + Vector3(Game.randf_range(-0.25, 0.25), Game.randf_range(-0.15, 0.2), 0)
+		var n := Vector3(0, 0.35, -1).normalized() if lp.z < 0.0 else Vector3(0, 0.3, 1).normalized()
+		if absf(lp.x) > float(dims["hw"]) - 0.05:
+			n = Vector3(signf(lp.x), 0.1, 0).normalized()
+		var sz := Game.randf_range(0.25, 0.55)
+		mi.transform = Transform3D(Basis.looking_at(-n, Vector3.UP).rotated(n, Game.randf_range(0, TAU)).scaled(Vector3(sz, sz, sz)), lp + n * 0.03)
+
 ## Point on the car's skin in the direction of `toward` (world).
 func hull_point(toward: Vector3) -> Vector3:
 	var l := to_local(toward)
@@ -312,11 +350,14 @@ func _physics_process(delta: float) -> void:
 			_engine(0.0)
 			brake = 20.0
 	_update_lights(delta)
-	if steer_wheel and not far:
+	if mode == Mode.PLAYER:
+		if not wheel_held:
+			wheel_angle = move_toward(wheel_angle, 0.0, (1.2 + absf(forward_speed()) * 0.08) * delta)
+		if steer_wheel:
+			steer_wheel.rotation.y = wheel_angle
+	elif steer_wheel and not far:
 		steer_wheel.rotation.y = steering * 4.0
-	if engine_player:
-		var sp := absf(forward_speed())
-		engine_player.pitch_scale = 0.6 + clampf(sp / 28.0, 0.0, 1.2) + (0.25 if absf(engine_force) > 100.0 else 0.0)
+	_update_audio(delta)
 	# upside down for a while -> flip back up (keeps the game playable)
 	if global_transform.basis.y.y < 0.1 and linear_velocity.length() < 1.0:
 		stuck_t += delta
@@ -330,6 +371,71 @@ func _physics_process(delta: float) -> void:
 			angular_velocity = Vector3.ZERO
 	else:
 		stuck_t = 0.0
+
+## The wheel's own frame (unrotated): rim in the local XZ plane, +Y towards
+## the driver, -Z at 12 o'clock.
+func wheel_frame() -> Transform3D:
+	return steer_tilt.global_transform
+
+## Engine revs through a simple six-speed gearbox, a high-rev layer, tyre squeal.
+func _update_audio(delta: float) -> void:
+	if engine_player == null or mode == Mode.WRECK:
+		return
+	var sp := absf(forward_speed())
+	var near := Game.flat(global_position - Game.player_pos()).length() < 70.0 or mode == Mode.PLAYER
+	var throttle := clampf(absf(engine_force) / 6000.0, 0.0, 1.0)
+	var g := 1
+	while g < GEAR_TOP.size() - 1 and sp > GEAR_TOP[g]:
+		g += 1
+	gear = g
+	var lo: float = GEAR_TOP[g - 1]
+	var hi: float = GEAR_TOP[g]
+	var target := lerpf(0.32, 1.0, clampf((sp - lo) / maxf(hi - lo, 0.1), 0.0, 1.0)) if sp > 0.6 else 0.22
+	target += throttle * 0.12
+	rpm = lerpf(rpm, target, minf(1.0, (9.0 if target > rpm else 4.0) * delta))
+	engine_player.pitch_scale = 0.55 + rpm * 1.15
+	engine_player.volume_db = lerpf(-17.0, -7.0, clampf(rpm * 0.6 + throttle * 0.5, 0.0, 1.0)) + (3.0 if mode == Mode.PLAYER else 0.0)
+	if near and rpm > 0.5:
+		if not engine_high.playing:
+			engine_high.play()
+		engine_high.pitch_scale = 0.75 + rpm * 0.55
+		engine_high.volume_db = lerpf(-34.0, -11.0, clampf((rpm - 0.5) * 2.0, 0.0, 1.0) * (0.4 + throttle * 0.6))
+	elif engine_high.playing:
+		engine_high.stop()
+	# tyre squeal: sideways slip or hard braking at speed
+	var lateral := absf(linear_velocity.dot(global_transform.basis.x))
+	var grip := 1.0
+	for w in wheels:
+		if w.is_in_contact():
+			grip = minf(grip, w.get_skidinfo())
+	var slip := clampf((lateral - 2.5) / 6.0, 0.0, 1.0)
+	slip = maxf(slip, clampf((0.7 - grip) * 2.0, 0.0, 1.0) * clampf(sp / 6.0, 0.0, 1.0))
+	if brake > 25.0 and sp > 7.0:
+		slip = maxf(slip, 0.6)
+	if near and slip > 0.05:
+		if not skid_player.playing:
+			skid_player.play()
+		skid_player.volume_db = lerpf(-26.0, -2.0, slip)
+		skid_player.pitch_scale = 0.85 + slip * 0.3
+		if mode == Mode.PLAYER and Game.player:
+			Game.player.wheel_rumble(0.15 + slip * 0.35)
+	elif skid_player.playing:
+		skid_player.stop()
+
+func set_horn(on: bool) -> void:
+	if on == horn_on:
+		return
+	horn_on = on
+	if on:
+		if horn_player == null:
+			horn_player = Game.sfx.make_loop_player("horn", self, -2.0)
+			horn_player.unit_size = 10.0
+			horn_player.max_distance = 150.0
+		Game.sfx.play("horn", global_position + global_transform.basis.z * -2.0)
+		horn_player.play()
+		Game.panic(global_position, 12.0)
+	elif horn_player:
+		horn_player.stop()
 
 func _drive_player(delta: float) -> void:
 	var sp := forward_speed()
@@ -506,13 +612,25 @@ func enter_player() -> void:
 	brake_in = 0.0
 	steer_in = 0.0
 	set_siren(false)
+	wheel_angle = 0.0
+	wheel_held = false
 	if engine_player:
 		engine_player.stream_paused = false
+	Game.sfx.play("door_open", door_global() + Vector3(0, 1, 0))
+	get_tree().create_timer(0.55).timeout.connect(func():
+		if is_instance_valid(self):
+			Game.sfx.play("door_close", door_global() + Vector3(0, 1, 0)))
+	get_tree().create_timer(1.1).timeout.connect(func():
+		if is_instance_valid(self) and mode == Mode.PLAYER:
+			Game.sfx.play("engine_start", global_position))
 
 func exit_player() -> void:
 	mode = Mode.PARKED
 	_engine(0.0)
 	brake = 10.0
+	wheel_held = false
+	set_horn(false)
+	Game.sfx.play("door_open", door_global() + Vector3(0, 1, 0))
 
 func player_control(throttle: float, brk: float, steer: float, handbrake: bool) -> void:
 	throttle_in = throttle
@@ -578,9 +696,16 @@ func _on_body_entered(body: Node) -> void:
 			ped.take_hit(999.0, impulse, contact, "torso", "explosion")
 		else:
 			ped.take_hit(speed * 9.0, impulse, contact, "torso", "car")
-		Game.sfx.play("thud", contact, 2.0)
+		Game.sfx.play("thud", contact, 4.0)
+		if speed > 6.0:
+			_blood_on_body(hull_point(ped.global_position + Vector3(0, 0.9, 0)))
+		if speed > 9.0:
+			Game.sfx.play("crunch", contact, 2.0)
+			Game.sfx.play("bone", contact, 0.0)
 		if mode == Mode.PLAYER:
 			Game.add_score(25)
+			if Game.player:
+				Game.player.wheel_rumble(0.7)
 	elif body is RigidBody3D and body.has_meta("ragdoll"):
 		var rd: Ragdoll = body.get_meta("ragdoll")
 		if is_instance_valid(rd) and speed > 4.0:
@@ -596,7 +721,11 @@ func _on_body_entered(body: Node) -> void:
 		if speed > 7.0:
 			health -= speed * 1.5
 			(body as Car).health -= speed * 1.5
-			Game.sfx.play("clank", contact, 2.0, 0.8)
+			Game.sfx.play("carhit", contact, clampf(speed * 0.4 - 4.0, -6.0, 6.0))
+			if speed > 14.0:
+				Game.sfx.play("glass", contact, 0.0)
+			if mode == Mode.PLAYER and Game.player:
+				Game.player.wheel_rumble(1.0)
 			if (body as Car).health <= 0.0:
 				(body as Car).explode()
 			if health <= 0.0:
@@ -612,7 +741,11 @@ func _on_body_entered(body: Node) -> void:
 			dent(global_position + fwd * dims["len"] * 0.5 + Vector3(0, dims["hood"] - 0.25, 0), -fwd, speed * 0.008)
 		if speed > 9.0:
 			health -= speed * 1.2
-			Game.sfx.play("clank", contact, 0.0, 0.7)
+			Game.sfx.play("carhit", contact, clampf(speed * 0.4 - 4.0, -6.0, 6.0), 0.9)
+			if speed > 15.0:
+				Game.sfx.play("glass", contact, -2.0)
+			if mode == Mode.PLAYER and Game.player:
+				Game.player.wheel_rumble(1.0)
 			if health <= 0.0:
 				explode()
 	elif body is RigidBody3D:
@@ -627,6 +760,13 @@ func explode() -> void:
 	health = 0.0
 	var pos := global_position + Vector3(0, 0.8, 0)
 	Game.sfx.play("explosion", pos, 6.0)
+	Game.sfx.play("glass", pos, 4.0)
+	Game.sfx.play("carhit", pos, 4.0, 0.7)
+	set_horn(false)
+	if skid_player:
+		skid_player.stop()
+	if engine_high:
+		engine_high.stop()
 	fire.emitting = true
 	fire.one_shot = false
 	var burnt := MeshLib.mat(Color(0.07, 0.06, 0.06), 0.95)

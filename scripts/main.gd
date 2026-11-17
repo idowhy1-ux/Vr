@@ -12,12 +12,18 @@ var frame := 0
 var autotest_step := 0
 var shot_path := ""
 var soak := false
+var drivetest := false
+var dt_car: Car
+var dt_yaw := 0.0
 
 func _ready() -> void:
 	Game.main = self
 	for a in OS.get_cmdline_user_args():
 		if a == "--soak":
 			soak = true
+		if a == "--drivetest":
+			drivetest = true
+			Game.screenshot = true   # freezes desktop controls, player invulnerable
 		if a.begins_with("--screenshot="):
 			shot_path = a.substr(13)
 			Game.screenshot = true
@@ -156,7 +162,8 @@ GRIP  grab weapons, people, cars - release to throw
 TRIGGER (empty hand)  telekinesis - stick pushes/pulls, grip yanks it to you, flick to throw
 TRIGGER (gun)  shoot          STICK CLICK  force push
 A  super jump     B  steal car / exit     X  bullet time     Y  recenter
-DRIVING  R trigger gas   L trigger brake/reverse   L stick steer"""
+DRIVING  grab the steering wheel and turn it   R trigger gas   L trigger brake
+A horn   L stick click handbrake   B get out"""
 	sign.font_size = 48
 	sign.pixel_size = 0.0025
 	sign.outline_size = 10
@@ -357,10 +364,16 @@ func _process(delta: float) -> void:
 		_screenshot_mode()
 	if soak:
 		_soak()
+	if drivetest:
+		_drivetest()
 
 # ---------------------------------------------------------------- headless self-test
 func _autotest() -> void:
 	# Exercises the main code paths without a headset; used in CI / headless runs.
+	if frame > 160 and frame <= 214 and player.car:
+		# turn the wheel clockwise (as the driver sees it) by sliding the hand round the rim
+		var a := minf(float(frame - 160) / 20.0, 1.0)
+		player.right.global_transform = player.car.wheel_frame() * Transform3D(Basis(), Vector3(cos(a), 0, sin(a)) * Car.WHEEL_R)
 	match frame:
 		30:
 			print("[autotest] spawn & hit")
@@ -396,9 +409,23 @@ func _autotest() -> void:
 			player.global_position = car.door_global() + Vector3(0, 0.2, 0)
 			player.enter_car(car)
 			player.right.sim_trigger = 1.0
-		215:
+			Game.force_wheel = true
+		160:
 			if player.car:
-				print("[autotest] driving: forward speed %.1f m/s (must be > 2)" % player.car.forward_speed())
+				print("[autotest] grab the steering wheel at 3 o'clock")
+				player.right.global_transform = player.car.wheel_frame() * Transform3D(Basis(), Vector3(Car.WHEEL_R, 0, 0))
+				player.right.sim_grip = true
+				test_yaw = player.car.global_rotation.y
+		214:
+			if player.car:
+				var c := player.car
+				var dyaw := wrapf(c.global_rotation.y - test_yaw, -PI, PI)
+				print("[autotest] wheel: angle %.2f rad (expect about -1.0), steer %.2f (> 0 = right), hand on rim %s, car yaw change %.2f rad (< 0 = turned right), speed %.1f" % [c.wheel_angle, c.steer_in, player.right.wheel_car != null, dyaw, c.forward_speed()])
+			player.right.sim_grip = false
+		219:
+			if player.car:
+				print("[autotest] driving: forward speed %.1f m/s (must be > 2), wheel released: hand on rim %s, wheel angle %.2f (returning to 0), gear %d, rpm %.2f" % [player.car.forward_speed(), player.right.wheel_car != null, player.car.wheel_angle, player.car.gear, player.car.rpm])
+			Game.force_wheel = false
 		220:
 			print("[autotest] explode + exit")
 			player.right.sim_trigger = 0.0
@@ -532,6 +559,24 @@ func _screenshot_mode() -> void:
 			player.origin.rotation.y = PI * 0.5
 		190:
 			_save_shot("_eye")
+			# sit in the police car with both hands on the wheel at ten and two
+			player.global_position = shot_car.door_global() + Vector3(0, 0.2, 0)
+			player.enter_car(shot_car)
+		192:
+			var c := player.car
+			if c:
+				cam.transform = Transform3D(Basis(Vector3.RIGHT, deg_to_rad(-14)), Vector3(0, 0, 0))
+				player.origin.transform = Transform3D.IDENTITY
+				c.wheel_angle = -0.35
+				for k in 2:
+					var h: Hand = player.left if k == 0 else player.right
+					var a := deg_to_rad(-150.0) if k == 0 else deg_to_rad(-30.0)
+					h.global_transform = c.wheel_frame() * Transform3D(Basis(), Vector3(cos(a), 0, sin(a)) * Car.WHEEL_R)
+					h.attach_wheel(c, a + c.wheel_angle)
+				player.right.add_blood(0.75)
+				player.left.add_blood(0.4)
+		200:
+			_save_shot("_drive")
 			get_tree().quit()
 
 var shot_cop: Ped
@@ -552,7 +597,26 @@ func _soak() -> void:
 		print("[soak] done")
 		get_tree().quit()
 
+## Measures how the player's car accelerates and turns (desktop, stick steering).
+func _drivetest() -> void:
+	if frame == 20:
+		dt_car = spawn_car(false, player.global_position, 0.0, 60.0)
+	if frame == 22:
+		player.global_position = dt_car.door_global() + Vector3(0, 0.2, 0)
+		player.enter_car(dt_car)
+		player.right.sim_trigger = 1.0
+	if frame > 22 and player.car:
+		var phase := (frame - 22) / 180
+		player.left.sim_stick = Vector2(1.0 if phase % 2 == 1 else 0.0, 0)
+		if (frame - 22) % 45 == 0:
+			var dyaw := wrapf(dt_car.global_rotation.y - dt_yaw, -PI, PI)
+			print("[drive] t=%.1fs steer=%s speed=%.1f m/s yaw_rate=%.2f rad/s gear=%d rpm=%.2f steering=%.2f" % [(frame - 22) / 90.0, player.left.sim_stick.x, dt_car.forward_speed(), dyaw / 0.5, dt_car.gear, dt_car.rpm, dt_car.steering])
+			dt_yaw = dt_car.global_rotation.y
+	if frame > 22 + 180 * 4:
+		get_tree().quit()
+
 var test_ped: Ped
+var test_yaw := 0.0
 var test_ped3: Ped
 
 ## Signed bend of child relative to parent around the parent's X axis.

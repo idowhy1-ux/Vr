@@ -271,6 +271,155 @@ func ground_y(pos: Vector3) -> float:
 		return Game.city.ground_height(pos)
 	return 0.0
 
+# ---------------------------------------------------------------- bullet impacts
+var _dust_pool: Array[CPUParticles3D] = []
+var _spark_pool: Array[CPUParticles3D] = []
+var _glass_pool: Array[CPUParticles3D] = []
+var _casing_pool: Array[CPUParticles3D] = []
+var _fx_i := 0
+var _casing_i := 0
+var holes_mm: MultiMesh
+var hole_index := 0
+const MAX_HOLES := 160
+
+func _impact_fx(kind: String) -> CPUParticles3D:
+	var p := CPUParticles3D.new()
+	p.one_shot = true
+	p.emitting = false
+	p.explosiveness = 1.0
+	p.local_coords = false
+	match kind:
+		"dust":
+			p.amount = 14
+			p.lifetime = 0.9
+			p.mesh = MeshLib.sphere(0.03, 5, 3)
+			p.material_override = MeshLib.mat(Color(0.62, 0.6, 0.56), 1.0)
+			p.spread = 35.0
+			p.initial_velocity_min = 0.6
+			p.initial_velocity_max = 2.6
+			p.gravity = Vector3(0, -1.5, 0)
+			p.damping_min = 2.0
+			p.damping_max = 4.0
+			p.scale_amount_min = 0.5
+			p.scale_amount_max = 2.2
+			var curve := Curve.new()
+			curve.add_point(Vector2(0, 0.6))
+			curve.add_point(Vector2(1, 1.6))
+			p.scale_amount_curve = curve
+		"spark":
+			p.amount = 16
+			p.lifetime = 0.35
+			p.mesh = MeshLib.box(Vector3(0.008, 0.008, 0.05))
+			p.material_override = MeshLib.mat(Color(1.0, 0.8, 0.4), 1.0, 0.0, Color(1.0, 0.7, 0.25), 6.0)
+			p.spread = 50.0
+			p.initial_velocity_min = 3.0
+			p.initial_velocity_max = 8.0
+			p.gravity = Vector3(0, -9.8, 0)
+			p.particle_flag_align_y = true
+		"glass":
+			p.amount = 24
+			p.lifetime = 0.9
+			p.mesh = MeshLib.box(Vector3(0.025, 0.003, 0.02))
+			p.material_override = MeshLib.mat(Color(0.75, 0.85, 0.9), 0.05, 0.6)
+			p.spread = 70.0
+			p.initial_velocity_min = 1.5
+			p.initial_velocity_max = 4.5
+			p.gravity = Vector3(0, -9.8, 0)
+			p.angular_velocity_min = -720.0
+			p.angular_velocity_max = 720.0
+	add_child(p)
+	return p
+
+func _build_impacts() -> void:
+	for i in 6:
+		_dust_pool.append(_impact_fx("dust"))
+		_spark_pool.append(_impact_fx("spark"))
+	for i in 3:
+		_glass_pool.append(_impact_fx("glass"))
+	for i in 8:
+		var c := CPUParticles3D.new()
+		c.one_shot = true
+		c.emitting = false
+		c.amount = 1
+		c.lifetime = 0.8
+		c.explosiveness = 1.0
+		c.local_coords = false
+		c.spread = 12.0
+		c.gravity = Vector3(0, -9.8, 0)
+		c.angular_velocity_min = -900.0
+		c.angular_velocity_max = 900.0
+		add_child(c)
+		_casing_pool.append(c)
+	holes_mm = MultiMesh.new()
+	holes_mm.transform_format = MultiMesh.TRANSFORM_3D
+	holes_mm.mesh = MeshLib.quad(Vector2(1, 1))
+	holes_mm.instance_count = MAX_HOLES
+	for i in MAX_HOLES:
+		holes_mm.set_instance_transform(i, Transform3D(Basis().scaled(Vector3(0.001, 0.001, 0.001)), Vector3(0, -50, 0)))
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = holes_mm
+	var m := StandardMaterial3D.new()
+	m.albedo_color = Color(0.03, 0.03, 0.03, 0.95)
+	m.albedo_texture = _blob_texture()
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.roughness = 0.9
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mmi.material_override = m
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mmi)
+
+func _fire_fx(p: CPUParticles3D, pos: Vector3, dir: Vector3) -> void:
+	p.global_position = pos
+	p.direction = dir
+	p.restart()
+	p.emitting = true
+
+## A bullet hitting a surface: "concrete", "metal" or "glass".
+func impact(pos: Vector3, normal: Vector3, surface: String) -> void:
+	if _dust_pool.is_empty():
+		_build_impacts()
+	_fx_i = (_fx_i + 1) % 6
+	var n := normal.normalized() if normal.length() > 0.01 else Vector3.UP
+	match surface:
+		"concrete":
+			_fire_fx(_dust_pool[_fx_i], pos + n * 0.02, n)
+			Game.sfx.play("concrete", pos, -4.0)
+		"metal":
+			_fire_fx(_spark_pool[_fx_i], pos + n * 0.02, n)
+			Game.sfx.play("metal", pos, -6.0, 1.25)
+		"glass":
+			_fire_fx(_glass_pool[_fx_i % 3], pos, n)
+			Game.sfx.play("glass", pos, -2.0)
+	if surface != "glass":
+		if Game.rng.randf() < 0.18:
+			Game.sfx.play("ricochet", pos, -4.0)
+		# bullet hole facing out of the surface
+		var up := Vector3.UP if absf(n.dot(Vector3.UP)) < 0.95 else Vector3.FORWARD
+		var b := Basis.looking_at(-n, up).rotated(n, Game.randf_range(0.0, TAU))
+		var sz := Game.randf_range(0.05, 0.08)
+		holes_mm.set_instance_transform(hole_index, Transform3D(b.scaled(Vector3(sz, sz, sz)), pos + n * 0.006))
+		hole_index = (hole_index + 1) % MAX_HOLES
+
+## A spent cartridge (brass, or a red shotgun shell) flying out of a gun.
+func casing(pos: Vector3, vel: Vector3, shell: bool) -> void:
+	if _casing_pool.is_empty():
+		_build_impacts()
+	var c := _casing_pool[_casing_i]
+	_casing_i = (_casing_i + 1) % _casing_pool.size()
+	if shell:
+		c.mesh = MeshLib.cylinder(0.0105, 0.07, 8)
+		c.material_override = MeshLib.mat(Color(0.65, 0.08, 0.06), 0.5)
+	else:
+		c.mesh = MeshLib.cylinder(0.0055, 0.022, 6)
+		c.material_override = MeshLib.mat(Color(0.85, 0.65, 0.3), 0.25, 1.0)
+	c.initial_velocity_min = vel.length() * 0.85
+	c.initial_velocity_max = vel.length() * 1.1
+	_fire_fx(c, pos, vel.normalized())
+	# tink when it lands
+	var land := pos + vel * 0.4
+	land.y = ground_y(land)
+	get_tree().create_timer(0.45).timeout.connect(func(): Game.sfx.play("casing", land, -2.0 if shell else 0.0, 0.6 if shell else 1.0))
+
 var _flash_pool: Array[MeshInstance3D] = []
 var _flash_i := 0
 

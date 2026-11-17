@@ -126,6 +126,8 @@ func _physics_process(delta: float) -> void:
 		start_bullet_time()
 	if y and not y_prev:
 		XRServer.center_on_hmd(XRServer.RESET_BUT_KEEP_TILT, true)
+		if car and is_instance_valid(car):
+			_seat_head()
 	if car and is_instance_valid(car):
 		_drive(delta, a)
 	else:
@@ -187,9 +189,21 @@ func _walk(delta: float, jump: bool) -> void:
 		if jump and not a_prev:
 			velocity.y = 8.5
 			Game.sfx.play("jump", global_position, -8.0)
+			Game.sfx.play("whoosh", global_position + Vector3(0, 1, 0), -4.0, 0.7)
 	else:
 		velocity.y -= 14.0 * delta
+	var vy := velocity.y
 	move_and_slide()
+	if is_on_floor() and not was_on_floor and vy < -6.0:
+		Game.sfx.play("thud", global_position, -2.0, 0.8)
+	was_on_floor = is_on_floor()
+	# footsteps
+	var hs := Vector2(velocity.x, velocity.z).length()
+	if is_on_floor() and hs > 0.8:
+		step_t -= delta * hs
+		if step_t <= 0.0:
+			step_t = 1.45
+			Game.sfx.play("step", global_position + Vector3(0, 0.05, 0), -4.0)
 	# snap turn with the right stick
 	var rs := right.stick() if not right.is_tk_active() else Vector2.ZERO
 	if absf(rs.x) > 0.65:
@@ -231,19 +245,25 @@ func enter_car(c: Car) -> void:
 	collision_mask = 0
 	col.disabled = true
 	velocity = Vector3.ZERO
-	# seat the head: rotate the origin so the user faces the windshield
+	_seat_head()
+	if Game.desktop_mode:
+		Game.show_message("A/D STEER   LMB GAS   SHIFT BRAKE   E EXIT")
+	else:
+		Game.show_message("GRAB THE WHEEL TO STEER\nR TRIGGER GAS   L TRIGGER BRAKE\nA HORN   L STICK CLICK HANDBRAKE   B EXIT")
+	_sync_car()
+
+## Put the headset at the driver's eye point, facing the windshield.
+func _seat_head() -> void:
 	var cam_local := camera.position
 	var cam_yaw := camera.transform.basis.get_euler().y
 	origin.transform = Transform3D(Basis(Vector3.UP, -cam_yaw), Vector3.ZERO)
-	origin.position = -(origin.transform.basis * Vector3(cam_local.x, cam_local.y - 0.0, cam_local.z))
-	Game.sfx.play("enter_car", global_position, -4.0)
-	Game.show_message("B = EXIT   R TRIGGER = GAS   L TRIGGER = BRAKE")
-	_sync_car()
+	origin.position = -(origin.transform.basis * Vector3(cam_local.x, cam_local.y, cam_local.z))
 
 func exit_car() -> void:
 	if car == null:
 		return
 	var c := car
+	_release_wheel()
 	car = null
 	c.exit_player()
 	var yaw := c.global_transform.basis.get_euler().y
@@ -261,19 +281,81 @@ func _sync_car() -> void:
 	var yaw := car.global_transform.basis.get_euler().y
 	global_transform = Transform3D(Basis(Vector3.UP, yaw), seat.origin)
 
-func _drive(delta: float, _a: bool) -> void:
+func _drive(delta: float, a: bool) -> void:
 	if car.mode == Car.Mode.WRECK:
 		exit_car()
 		return
 	_sync_car()
-	var gas := right.trig()
+	# right trigger = gas, left trigger = brake/reverse (unless that hand holds a gun)
+	var gas := right.trig() if not right.is_holding_gun() else 0.0
 	var brk := left.trig() if not left.is_holding_gun() else 0.0
-	if right.grip():
-		brk = maxf(brk, 1.0)
-	var steer := left.stick().x
-	car.player_control(gas, brk, steer, false)
+	var steer := 0.0
+	if Game.desktop_mode and not Game.force_wheel:
+		steer = left.stick().x
+		car.wheel_angle = -steer * Car.WHEEL_LOCK * 0.5
+	else:
+		_update_wheel(delta)
+		steer = clampf(-car.wheel_angle / Car.WHEEL_LOCK, -1.0, 1.0)
+	car.player_control(gas, brk, steer, left.click())
+	car.set_horn(a)
+	# the road through the wheel: a light rumble that grows with speed
+	if not wheel_hands.is_empty():
+		rumble_t -= delta
+		var sp := absf(car.forward_speed())
+		if rumble_t <= 0.0 and sp > 2.0:
+			rumble_t = 0.09
+			wheel_rumble(clampf(0.04 + sp * 0.006 + car.rpm * 0.05, 0.0, 0.35))
 	if Game.desktop_mode:
 		_desktop_update()
+
+# ---------------------------------------------------------------- steering wheel
+var wheel_hands: Dictionary = {}   # Hand -> {"a0": hand angle at grab, "phi0": wheel angle at grab}
+var rumble_t := 0.0
+var step_t := 0.0
+var was_on_floor := true
+
+## Hands grab the rim with the grip button and turn it; the wheel angle is the
+## average of how far each holding hand has moved around the rim.
+func _update_wheel(_delta: float) -> void:
+	var inv := car.wheel_frame().affine_inverse()
+	for h: Hand in [left, right]:
+		var local := inv * h.global_position
+		var radial := Vector2(local.x, local.z).length()
+		var near := absf(radial - Car.WHEEL_R) < 0.12 and absf(local.y) < 0.13
+		var gripping := h.grip() and h.held == null
+		if gripping and not wheel_hands.has(h) and near and h.tk_target == null:
+			var a0 := atan2(local.z, local.x)
+			wheel_hands[h] = {"a0": a0, "phi0": car.wheel_angle}
+			h.attach_wheel(car, a0 + car.wheel_angle)
+			h.haptic(0.6, 0.06)
+		elif wheel_hands.has(h) and (not h.grip() or h.held != null):
+			wheel_hands.erase(h)
+			h.detach_wheel()
+	if wheel_hands.is_empty():
+		car.wheel_held = false
+		return
+	var sum := 0.0
+	for h: Hand in wheel_hands.keys():
+		var local := inv * h.global_position
+		var da := wrapf(atan2(local.z, local.x) - float(wheel_hands[h]["a0"]), -PI, PI)
+		sum += float(wheel_hands[h]["phi0"]) - da
+	car.wheel_angle = clampf(sum / wheel_hands.size(), -Car.WHEEL_LOCK, Car.WHEEL_LOCK)
+	car.wheel_held = true
+
+func _release_wheel() -> void:
+	for h: Hand in wheel_hands.keys():
+		h.detach_wheel()
+	wheel_hands.clear()
+	if car:
+		car.wheel_held = false
+
+## Haptic buzz in every hand that is on the wheel (or both, if none is).
+func wheel_rumble(amount: float) -> void:
+	if Game.desktop_mode:
+		return
+	var hands: Array = wheel_hands.keys() if not wheel_hands.is_empty() else [left, right]
+	for h: Hand in hands:
+		h.haptic(clampf(amount, 0.0, 1.0), 0.07)
 
 # ---------------------------------------------------------------- damage
 func take_damage(dmg: float, knockback: Vector3 = Vector3.ZERO) -> void:
@@ -317,6 +399,8 @@ func die() -> void:
 func respawn() -> void:
 	dead = false
 	health = 100.0
+	left.add_blood(-1.0)
+	right.add_blood(-1.0)
 	Game.wanted = 0.0
 	Game._update_stars()
 	for c in get_tree().get_nodes_in_group("cops"):

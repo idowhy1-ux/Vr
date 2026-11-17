@@ -258,11 +258,28 @@ func _line_of_sight() -> bool:
 	var q := PhysicsRayQueryParameters3D.create(from, to, Game.bit(Game.L_WORLD))
 	return space.intersect_ray(q).is_empty()
 
+## Male or female voice: "scream", "pain" or "dead". Throttled per person.
+var _last_voice := -10.0
+func voice(kind: String, vol: float = 0.0) -> void:
+	var now := Time.get_ticks_msec() / 1000.0
+	if now - _last_voice < 0.6:
+		return
+	_last_voice = now
+	var head := global_position + Vector3(0, 1.6, 0)
+	if ragdoll and is_instance_valid(ragdoll):
+		head = ragdoll.bodies[B.B_HEAD].global_position
+	var name := kind
+	if female:
+		name = {"scream": "scream_f", "pain": "pain_f", "dead": "scream_f"}.get(kind, "pain_f")
+	elif kind == "pain" and Game.rng.randf() < 0.3:
+		name = "grunt"
+	Game.sfx.play(name, head, vol, 0.85 if kind == "dead" else 1.0)
+
 func scare(from: Vector3) -> void:
 	if state == State.RAGDOLL or state == State.DEAD or is_cop:
 		return
 	if state != State.FLEE and Game.rng.randf() < 0.5:
-		Game.sfx.play("scream", global_position, -6.0, Game.randf_range(0.8, 1.3) * (1.25 if female else 1.0))
+		voice("scream", -4.0)
 	state = State.FLEE
 	flee_time = Game.randf_range(7.0, 14.0)
 	flee_from = from
@@ -337,7 +354,11 @@ func _animate(delta: float, speed: float) -> void:
 	var w := clampf(sp / 1.4, 0.0, 1.0)              # walk weight
 	var r := clampf((sp - 2.0) / 2.2, 0.0, 1.0)       # run weight
 	var cadence := lerpf(5.6, 8.6, r) if sp > 0.05 else 0.0
+	var prev_phase := anim_phase
 	anim_phase = fmod(anim_phase + delta * cadence * clampf(sp / 1.4, 0.6, 1.4), TAU)
+	if sp > 0.5 and (prev_phase < PI and anim_phase >= PI or anim_phase < prev_phase):
+		if global_position.distance_to(Game.player_pos()) < 14.0:
+			Game.sfx.play("step", global_position + Vector3(0, 0.05, 0), -6.0 + clampf(sp - 1.5, 0.0, 3.0) * 2.0, 1.0 + (0.08 if female else 0.0))
 	var ph := anim_phase
 	var s := sin(ph)
 	var c := cos(ph)
@@ -417,7 +438,7 @@ func take_hit(dmg: float, impulse: Vector3, pos: Vector3, part: String, kind: St
 	if health <= 0.0:
 		die(kind, impulse, pos, part)
 		return
-	Game.sfx.play("grunt" if Game.rng.randf() < 0.6 else "yell", global_position, -4.0, Game.randf_range(0.8, 1.2) * (1.3 if female else 1.0))
+	voice("pain", -2.0)
 	if kind in ["car", "throw", "explosion", "sharp"] or impulse.length() > 7.0:
 		go_ragdoll(impulse, pos, part)
 		if ragdoll:
@@ -431,6 +452,10 @@ func ragdoll_damage(dmg: float, _kind: String) -> void:
 	if state == State.DEAD:
 		return
 	health -= dmg
+	if health > 0.0 and dmg > 8.0:
+		voice("pain", 0.0)
+	elif health <= 0.0 and dmg < 500.0:
+		voice("dead", 0.0)
 	if health <= 0.0:
 		state = State.DEAD
 		alive = false
@@ -485,7 +510,7 @@ func die(kind: String, impulse: Vector3, pos: Vector3, part: String) -> void:
 				ragdoll.dismember(B.B_CHEST, impulse * 0.2)
 			elif Game.rng.randf() < 0.5:
 				ragdoll.dismember([B.B_ARM_L, B.B_ARM_R, B.B_THIGH_L, B.B_THIGH_R, B.B_FORE_L, B.B_SHIN_R][Game.randi_range(0, 5)], impulse * 0.3)
-	Game.sfx.play("dead", global_position, -6.0, Game.randf_range(0.8, 1.25) * (1.3 if female else 1.0))
+	voice("dead", -2.0)
 	_on_killed()
 
 func _on_killed() -> void:
